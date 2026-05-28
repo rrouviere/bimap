@@ -1,4 +1,6 @@
-use futures::future::join_all;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tracing::{debug, error, trace};
@@ -192,7 +194,7 @@ async fn execute_batch(
             .await?;
     }
 
-    let futures: Vec<_> = batch
+    let mut unordered: FuturesUnordered<_> = batch
         .iter()
         .map(|entry| {
             let target_addr = SocketAddr::new(config.target_addr, entry.port);
@@ -203,13 +205,84 @@ async fn execute_batch(
                 target_addr,
                 timeout: Duration::from_millis(config.timeout_ms),
             };
-            proto.run(ctx)
+            Box::pin(async move { (entry.id, proto.run(ctx).await) })
         })
         .collect();
 
-    let test_results = join_all(futures).await;
+    let mut client_results: HashMap<u32, ProtocolResult> = HashMap::new();
+    while let Some((id, result)) = unordered.next().await {
+        match &result {
+            ProtocolResult::Pass { .. } => *passed += 1,
+            ProtocolResult::Fail { .. } => *failed += 1,
+            ProtocolResult::Error { .. } => *errors += 1,
+        }
 
-    for (entry, result) in batch.iter().zip(test_results.iter()) {
+        // Print per-test result immediately
+        if config.json && !config.json_export {
+            if let Some(entry) = batch.iter().find(|e| e.id == id) {
+                print_result(
+                    entry.id,
+                    entry.test_name,
+                    entry.transport_str,
+                    entry.port,
+                    entry.direction,
+                    &result,
+                    true,
+                    None,
+                );
+            }
+        } else if !config.json_export {
+            if let Some(entry) = batch.iter().find(|e| e.id == id) {
+                match &result {
+                    ProtocolResult::Pass {
+                        sent_bytes,
+                        received_bytes,
+                    } => {
+                        print_pass(format_args!(
+                            "{} {} {} {} (tx={} rx={})",
+                            entry.test_name,
+                            entry.transport_str,
+                            entry.port,
+                            entry.direction.as_str(),
+                            sent_bytes,
+                            received_bytes
+                        ));
+                    }
+                    ProtocolResult::Fail {
+                        reason,
+                        sent_bytes,
+                        received_bytes,
+                    } => {
+                        print_fail(format_args!(
+                            "{} {} {} {} {} (tx={} rx={})",
+                            entry.test_name,
+                            entry.transport_str,
+                            entry.port,
+                            entry.direction.as_str(),
+                            reason,
+                            sent_bytes,
+                            received_bytes
+                        ));
+                    }
+                    ProtocolResult::Error { reason } => {
+                        print_err(format_args!(
+                            "{} {} {} {} {}",
+                            entry.test_name,
+                            entry.transport_str,
+                            entry.port,
+                            entry.direction.as_str(),
+                            reason
+                        ));
+                    }
+                }
+            }
+        }
+
+        client_results.insert(id, result);
+    }
+
+    // Read server Reports in order, match by ID
+    for entry in batch {
         let server_error =
             match tokio::time::timeout(Duration::from_millis(config.timeout_ms), channel.recv())
                 .await
@@ -229,39 +302,24 @@ async fn execute_batch(
                 }
             };
 
-        match result {
-            ProtocolResult::Pass { .. } => *passed += 1,
-            ProtocolResult::Fail { .. } => *failed += 1,
-            ProtocolResult::Error { .. } => *errors += 1,
-        }
-
         if let Some(ref err_msg) = server_error {
-            if !matches!(result, ProtocolResult::Pass { .. }) {
-                error!("server: {err_msg}");
+            if let Some(result) = client_results.get(&entry.id) {
+                if !matches!(result, ProtocolResult::Pass { .. }) {
+                    error!("server: {err_msg}");
+                }
             }
         }
 
-        if config.json && !config.json_export {
-            print_result(
-                entry.id,
-                entry.test_name,
-                entry.transport_str,
-                entry.port,
-                entry.direction,
+        if let Some(result) = client_results.remove(&entry.id) {
+            results.push(TestEntry {
+                protocol: entry.test_name.to_string(),
+                transport: entry.transport_str.to_string(),
+                port: entry.port,
+                direction: entry.direction,
                 result,
-                true,
-                server_error.as_deref(),
-            );
+                server_error,
+            });
         }
-
-        results.push(TestEntry {
-            protocol: entry.test_name.to_string(),
-            transport: entry.transport_str.to_string(),
-            port: entry.port,
-            direction: entry.direction,
-            result: result.clone(),
-            server_error: server_error.clone(),
-        });
     }
 
     Ok(())
