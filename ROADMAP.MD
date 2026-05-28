@@ -48,8 +48,8 @@ Fix: eliminate 300+ LOC of manual wire-format parsing. Reliability increase.
 
 | Step | Agent | Worktree | Deliverable | Status |
 |------|-------|----------|-------------|--------|
-| 4a | Audit | `master` | Convention compliance scan (no unwrap, no silent discard, no panic) | ⏳ IN PROGRESS |
-| 4b | User persona | — | Final real-world validation | ⏳ PENDING |
+| 4a | Dev | `fix/audit-issues` | Convention compliance: unwrap, silent discards fixed | ✅ DONE — commit 8d29db3 |
+| 4b | User persona | — | Final real-world validation | ⏳ IN PROGRESS |
 
 ---
 
