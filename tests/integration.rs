@@ -73,6 +73,7 @@ async fn configure_ack_roundtrip() {
             end: 10001,
         }],
         bidir: false,
+        target: None,
     };
     client.send(&configure).await.expect("send configure");
 
@@ -118,6 +119,7 @@ async fn full_open_test_loopback() {
         bidir: false,
         timeout_ms: 5000,
         server_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         json: false,
         json_export: false,
         verbose: false,
@@ -156,6 +158,7 @@ async fn server_rejects_unknown_protocol() {
                 end: 30000,
             }],
             bidir: false,
+            target: None,
         })
         .await
         .expect("send configure");

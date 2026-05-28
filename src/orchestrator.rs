@@ -63,17 +63,19 @@ pub async fn run_server(
     registry: &TestRegistry,
     timeout_ms: u64,
 ) -> Result<TestSummary, String> {
-    match channel.recv().await? {
-        Message::Configure { .. } => {
+    let test_bind_ip = match channel.recv().await? {
+        Message::Configure { target, .. } => {
+            let bind_ip: Option<IpAddr> = target.as_ref().and_then(|t| t.parse().ok());
             channel
                 .send(&Message::Ack {
                     ok: true,
                     message: None,
                 })
                 .await?;
+            bind_ip
         }
         _ => return Err("expected Configure message".into()),
-    }
+    };
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -102,7 +104,8 @@ pub async fn run_server(
                     Direction::ServerToClient => Direction::ClientToServer,
                 };
 
-                let target_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
+                let bind_ip = test_bind_ip.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                let target_addr = SocketAddr::new(bind_ip, port);
 
                 let ctx = TestContext {
                     direction: server_dir,
@@ -148,6 +151,7 @@ pub struct ClientConfig {
     pub bidir: bool,
     pub timeout_ms: u64,
     pub server_addr: IpAddr,
+    pub target_addr: IpAddr,
     pub json: bool,
     pub json_export: bool,
     pub verbose: bool,
@@ -201,6 +205,7 @@ pub async fn run_client(
             tests: config.tests.to_vec(),
             port_ranges: port_range_specs,
             bidir: config.bidir,
+            target: Some(config.target_addr.to_string()),
         })
         .await?;
 
@@ -245,7 +250,7 @@ pub async fn run_client(
                 };
 
                 for dir in directions {
-                    let target_addr = SocketAddr::new(config.server_addr, port);
+                    let target_addr = SocketAddr::new(config.target_addr, port);
 
                     if config.verbose {
                         eprintln!("[v] orchestrator sending test {} to server", id);
@@ -293,9 +298,25 @@ pub async fn run_client(
                         eprintln!("[v] orchestrator waiting for report {}", id);
                     }
 
-                    let server_error = match channel.recv().await? {
-                        Message::Report { error, .. } => error,
-                        _ => return Err("expected Report".into()),
+                    let server_error = match tokio::time::timeout(
+                        Duration::from_millis(config.timeout_ms),
+                        channel.recv(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(Message::Report { error, .. })) => error,
+                        Ok(Ok(_)) => {
+                            eprintln!("server: unexpected message (skipping)");
+                            None
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("server: {e}");
+                            None
+                        }
+                        Err(_) => {
+                            eprintln!("server: timeout (no report within {}ms)", config.timeout_ms);
+                            None
+                        }
                     };
 
                     if let Some(ref err_msg) = server_error {

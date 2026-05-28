@@ -11,6 +11,8 @@ pub enum Message {
         tests: Vec<String>,
         port_ranges: Vec<PortRangeSpec>,
         bidir: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
     },
     Ack {
         ok: bool,
@@ -91,6 +93,7 @@ mod tests {
                 end: 1024,
             }],
             bidir: false,
+            target: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -99,10 +102,12 @@ mod tests {
                 tests,
                 port_ranges,
                 bidir,
+                target,
             } => {
                 assert_eq!(tests.len(), 2);
                 assert_eq!(port_ranges[0].transport, "tcp");
                 assert!(!bidir);
+                assert!(target.is_none());
             }
             _ => panic!("wrong variant"),
         }

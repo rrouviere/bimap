@@ -1,5 +1,6 @@
 use bimap::cli::{parse, Command};
 use bimap::control::msg::Message;
+use std::net::IpAddr;
 use std::net::ToSocketAddrs;
 use std::process;
 
@@ -99,6 +100,8 @@ fn main() {
             Command::Client {
                 server,
                 port,
+                control_server,
+                target,
                 test,
                 port_range,
                 bidir,
@@ -109,6 +112,33 @@ fn main() {
                 quiet: _,
                 verbose,
             } => {
+                let (server, port) = if let Some(ref cs) = control_server {
+                    let (ip_str, port_str) = match cs.split_once(':') {
+                        Some(p) => p,
+                        None => {
+                            eprintln!("bimap: --control-server must be ip:port");
+                            return 2;
+                        }
+                    };
+                    let ip: IpAddr = match ip_str.parse() {
+                        Ok(ip) => ip,
+                        Err(_) => {
+                            eprintln!("bimap: bad IP in --control-server");
+                            return 2;
+                        }
+                    };
+                    let port: u16 = match port_str.parse() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            eprintln!("bimap: bad port in --control-server");
+                            return 2;
+                        }
+                    };
+                    (ip, port)
+                } else {
+                    (server, port)
+                };
+                let target = target.unwrap_or(server);
                 use bimap::control::channel_from_client_tls;
                 use bimap::control::tls::{client_tls_connect, make_tls_connector};
                 use bimap::orchestrator;
@@ -155,11 +185,11 @@ fn main() {
                     }
                 };
 
-                let target = format!("{server}:{port}");
-                let tls_stream = match client_tls_connect(&connector, &target).await {
+                let control_target = format!("{server}:{port}");
+                let tls_stream = match client_tls_connect(&connector, &control_target).await {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("bimap: cannot connect to {target}: {e}");
+                        eprintln!("bimap: cannot connect to {control_target}: {e}");
                         return 3;
                     }
                 };
@@ -223,6 +253,7 @@ fn main() {
                     bidir,
                     timeout_ms: timeout,
                     server_addr: server,
+                    target_addr: target,
                     json,
                     json_export,
                     verbose,

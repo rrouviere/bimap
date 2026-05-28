@@ -28,6 +28,14 @@ pub enum Command {
         after_help = "AVAILABLE TESTS:\n  open        L4  tcp,udp  — TCP/1-byte or UDP echo roundtrip\n  1kb         L4  tcp,udp  — 1024-byte data roundtrip + SHA-256 check\n  icmp-ping   L3  icmp     — ICMP echo request/reply (root required)\n  icmp-full   L3  icmp     — full ICMP type scan (root required)\n  tls         L7  tcp      — TLS handshake + 1024-byte SHA-256 check\n  dns         L7  tcp,udp  — DNS A query for example.com\n\nRun without --test to list available tests."
     )]
     Client {
+        /// Control server address (ip:port). Replaces --server + --port
+        #[arg(long, value_name = "IP:PORT")]
+        control_server: Option<String>,
+
+        /// Target IP for tests (default: control server IP)
+        #[arg(long, value_name = "IP")]
+        target: Option<IpAddr>,
+
         /// Server address (required)
         #[arg(long, value_name = "IP")]
         server: IpAddr,
