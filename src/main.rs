@@ -136,7 +136,13 @@ fn main() {
                     };
                     (ip, port)
                 } else {
-                    (server, port)
+                    match server {
+                        Some(s) => (s, port),
+                        None => {
+                            eprintln!("bimap: --server or --control-server is required");
+                            return 2;
+                        }
+                    }
                 };
                 let target = target.unwrap_or(server);
                 use bimap::control::channel_from_client_tls;

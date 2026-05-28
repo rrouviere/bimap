@@ -286,7 +286,19 @@ pub async fn run_client(
                         );
                     }
 
-                    let result = proto.run(ctx).await;
+                    let result = match tokio::time::timeout(
+                        Duration::from_millis(config.timeout_ms + 2000),
+                        proto.run(ctx),
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => ProtocolResult::Fail {
+                            reason: "timeout (test took too long)".into(),
+                            sent_bytes: 0,
+                            received_bytes: 0,
+                        },
+                    };
 
                     match &result {
                         ProtocolResult::Pass { .. } => passed += 1,

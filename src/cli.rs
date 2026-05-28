@@ -36,9 +36,9 @@ pub enum Command {
         #[arg(long, value_name = "IP")]
         target: Option<IpAddr>,
 
-        /// Server address (required)
-        #[arg(long, value_name = "IP")]
-        server: IpAddr,
+        /// Server address (required unless --control-server is given)
+        #[arg(long, value_name = "IP", required = false)]
+        server: Option<IpAddr>,
 
         /// Control port (default: 443)
         #[arg(long, default_value_t = 443)]
