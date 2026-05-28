@@ -1,7 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+pub const PROTOCOL_VERSION: u32 = 1;
+
 fn default_timeout() -> u64 {
     5000
+}
+
+fn default_version() -> u32 {
+    PROTOCOL_VERSION
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +25,8 @@ pub enum Message {
         target: Option<String>,
         #[serde(default = "default_timeout")]
         timeout_ms: u64,
+        #[serde(default = "default_version")]
+        client_version: u32,
     },
     Ack {
         ok: bool,
@@ -101,6 +109,7 @@ mod tests {
             bidir: false,
             target: None,
             timeout_ms: 500,
+            client_version: PROTOCOL_VERSION,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -111,12 +120,14 @@ mod tests {
                 bidir,
                 target,
                 timeout_ms,
+                client_version,
             } => {
                 assert_eq!(tests.len(), 2);
                 assert_eq!(port_ranges[0].transport, "tcp");
                 assert!(!bidir);
                 assert!(target.is_none());
                 assert_eq!(timeout_ms, 500);
+                assert_eq!(client_version, PROTOCOL_VERSION);
             }
             _ => panic!("wrong variant"),
         }

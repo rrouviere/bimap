@@ -75,6 +75,7 @@ async fn configure_ack_roundtrip() {
         bidir: false,
         target: None,
         timeout_ms: 500,
+        client_version: bimap::control::msg::PROTOCOL_VERSION,
     };
     client.send(&configure).await.expect("send configure");
 
@@ -163,6 +164,7 @@ async fn server_rejects_unknown_protocol() {
             bidir: false,
             target: None,
             timeout_ms: 2000,
+            client_version: bimap::control::msg::PROTOCOL_VERSION,
         })
         .await
         .expect("send configure");

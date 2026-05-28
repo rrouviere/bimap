@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tracing::{debug, trace};
 
-use crate::control::msg::{Message, PortRangeSpec, TestSummary, TransferReport};
+use crate::control::msg::{Message, PortRangeSpec, TestSummary, TransferReport, PROTOCOL_VERSION};
 use crate::control::ControlChannel;
 use crate::output::{
     finish_fail_line, format_port_ranges, is_interactive, print_err, print_fail, print_fail_live,
@@ -72,8 +72,22 @@ pub async fn run_server(
 ) -> Result<TestSummary, String> {
     let (timeout_ms, test_bind_ip) = match channel.recv().await? {
         Message::Configure {
-            target, timeout_ms, ..
+            target,
+            timeout_ms,
+            client_version,
+            ..
         } => {
+            if client_version < PROTOCOL_VERSION {
+                channel
+                    .send(&Message::Ack {
+                        ok: false,
+                        message: Some(format!(
+                            "client version {client_version} too old, need {PROTOCOL_VERSION}"
+                        )),
+                    })
+                    .await?;
+                return Err("client version too old, update client".into());
+            }
             let bind_ip: Option<IpAddr> = target.as_ref().and_then(|t| t.parse().ok());
             channel
                 .send(&Message::Ack {
@@ -452,6 +466,7 @@ pub async fn run_client(
             bidir: config.bidir,
             target: Some(config.target_addr.to_string()),
             timeout_ms: config.timeout_ms,
+            client_version: PROTOCOL_VERSION,
         })
         .await?;
 
@@ -461,10 +476,7 @@ pub async fn run_client(
             ok: false,
             message: Some(msg),
         } => return Err(format!("server rejected config: {msg}")),
-        Message::Ack {
-            ok: false,
-            message: None,
-        } => return Err("server rejected config".into()),
+        Message::Ack { ok: false, .. } => return Err("server rejected config".into()),
         _ => return Err("expected Ack".into()),
     }
 
