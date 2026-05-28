@@ -174,17 +174,17 @@ if [ $ec -eq 3 ]; then echo "  PASS (connection error -> 3)"; PASS=$((PASS+1))
 else echo "  FAIL (expected 3, got $ec)"; FAIL=$((FAIL+1)); fi
 
 $BIN client --server 127.0.0.1 --timeout 500 2>/dev/null; ec=$?
-if [ $ec -eq 2 ]; then echo "  PASS (no port range -> 2)"; PASS=$((PASS+1))
-else echo "  FAIL (expected 2, got $ec)"; FAIL=$((FAIL+1)); fi
+if [ $ec -eq 0 ]; then echo "  PASS (no args -> lists tests, exit 0)"; PASS=$((PASS+1))
+else echo "  FAIL (expected 0, got $ec)"; FAIL=$((FAIL+1)); fi
 set -e
 
-# 14. --test empty lists tests + exit 2
+# 14. --test alone lists tests + exit 0
 echo "=== test_listing ==="
 set +e
 out=$($BIN client --server 127.0.0.1 2>&1)
 ec=$?
 set -e
-if [ $ec -eq 2 ] && echo "$out" | grep -q "available tests"; then
+if [ $ec -eq 0 ] && echo "$out" | grep -q "available tests"; then
     echo "  PASS"
     PASS=$((PASS+1))
 else
