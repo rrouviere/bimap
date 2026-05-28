@@ -10,6 +10,10 @@ fn default_version() -> u32 {
     PROTOCOL_VERSION
 }
 
+fn default_parallel() -> usize {
+    100
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
@@ -27,6 +31,8 @@ pub enum Message {
         timeout_ms: u64,
         #[serde(default = "default_version")]
         client_version: u32,
+        #[serde(default = "default_parallel")]
+        parallel: usize,
     },
     Ack {
         ok: bool,
@@ -110,6 +116,7 @@ mod tests {
             target: None,
             timeout_ms: 500,
             client_version: PROTOCOL_VERSION,
+            parallel: 100,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -121,6 +128,7 @@ mod tests {
                 target,
                 timeout_ms,
                 client_version,
+                parallel,
             } => {
                 assert_eq!(tests.len(), 2);
                 assert_eq!(port_ranges[0].transport, "tcp");
@@ -128,6 +136,7 @@ mod tests {
                 assert!(target.is_none());
                 assert_eq!(timeout_ms, 500);
                 assert_eq!(client_version, PROTOCOL_VERSION);
+                assert_eq!(parallel, 100);
             }
             _ => panic!("wrong variant"),
         }

@@ -6,7 +6,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tracing::{debug, trace};
 
 pub struct ControlChannel {
-    reader: Box<dyn AsyncRead + Unpin + Send>,
+    reader: BufReader<Box<dyn AsyncRead + Unpin + Send>>,
     writer: Box<dyn AsyncWrite + Unpin + Send>,
     verbose: u8,
 }
@@ -32,8 +32,7 @@ impl ControlChannel {
         if self.verbose >= 1 {
             debug!("ctrl waiting for response");
         }
-        let mut reader = BufReader::new(&mut self.reader);
-        reader
+        self.reader
             .read_line(&mut line)
             .await
             .map_err(|e| format!("read: {e}"))?;
@@ -54,7 +53,7 @@ fn new_channel(
     verbose: u8,
 ) -> ControlChannel {
     ControlChannel {
-        reader,
+        reader: BufReader::new(reader),
         writer,
         verbose,
     }

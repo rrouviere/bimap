@@ -286,10 +286,6 @@ fn main() {
                 let registry = build_registry();
                 match orchestrator::run_client(channel, &registry, &config).await {
                     Ok(summary) => {
-                        info!(
-                            "done: {} passed, {} failed, {} errors",
-                            summary.passed, summary.failed, summary.errors
-                        );
                         if summary.failed > 0 || summary.errors > 0 {
                             1
                         } else {

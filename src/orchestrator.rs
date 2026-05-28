@@ -70,11 +70,12 @@ pub async fn run_server(
     mut channel: ControlChannel,
     registry: &TestRegistry,
 ) -> Result<TestSummary, String> {
-    let (timeout_ms, test_bind_ip) = match channel.recv().await? {
+    let (timeout_ms, parallel, test_bind_ip) = match channel.recv().await? {
         Message::Configure {
             target,
             timeout_ms,
             client_version,
+            parallel,
             ..
         } => {
             if client_version < PROTOCOL_VERSION {
@@ -95,7 +96,7 @@ pub async fn run_server(
                     message: None,
                 })
                 .await?;
-            (timeout_ms, bind_ip)
+            (timeout_ms, parallel, bind_ip)
         }
         _ => return Err("expected Configure message".into()),
     };
@@ -105,7 +106,10 @@ pub async fn run_server(
     let mut errors = 0u32;
 
     loop {
-        match channel.recv().await? {
+        // Read first message: must be Test or Done
+        let first = channel.recv().await?;
+        let (proto, mut batch, mut done_after) = match first {
+            Message::Done => break,
             Message::Test {
                 id,
                 protocol,
@@ -116,41 +120,94 @@ pub async fn run_server(
                 let proto = registry
                     .find(&protocol)
                     .ok_or_else(|| format!("unknown protocol: {protocol}"))?;
-
                 let transport = Transport::from_str(&transport)
                     .ok_or_else(|| format!("unknown transport: {transport}"))?;
-
                 let dir = parse_direction(&direction)?;
-                // Server-side direction is inverted
                 let server_dir = match dir {
                     Direction::ClientToServer => Direction::ServerToClient,
                     Direction::ServerToClient => Direction::ClientToServer,
                 };
-
                 let bind_ip = test_bind_ip.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
                 let target_addr = SocketAddr::new(bind_ip, port);
-
-                let ctx = TestContext {
-                    direction: server_dir,
+                let batch = vec![ServerBatchEntry {
+                    id,
                     transport,
+                    dir: server_dir,
                     port,
                     target_addr,
+                }];
+                (proto, batch, false)
+            }
+            _ => return Err("unexpected message, expected Test or Done".into()),
+        };
+
+        // Collect more Test messages — client sent them in one burst
+        loop {
+            if batch.len() >= parallel {
+                break;
+            }
+            match tokio::time::timeout(Duration::from_millis(10), channel.recv()).await {
+                Ok(Ok(Message::Test {
+                    id,
+                    protocol: _,
+                    transport,
+                    port,
+                    direction,
+                })) => {
+                    let transport = Transport::from_str(&transport)
+                        .ok_or_else(|| format!("unknown transport: {transport}"))?;
+                    let dir = parse_direction(&direction)?;
+                    let server_dir = match dir {
+                        Direction::ClientToServer => Direction::ServerToClient,
+                        Direction::ServerToClient => Direction::ClientToServer,
+                    };
+                    let bind_ip = test_bind_ip.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                    let target_addr = SocketAddr::new(bind_ip, port);
+                    batch.push(ServerBatchEntry {
+                        id,
+                        transport,
+                        dir: server_dir,
+                        port,
+                        target_addr,
+                    });
+                }
+                Ok(Ok(Message::Done)) => {
+                    done_after = true;
+                    break;
+                }
+                Ok(Ok(_)) => return Err("unexpected message".into()),
+                Ok(Err(e)) => return Err(e),
+                Err(_) => break, // 10ms timeout, batch likely complete
+            }
+        }
+
+        // Process batch in parallel
+        let mut unordered: FuturesUnordered<_> = batch
+            .into_iter()
+            .map(|entry| {
+                let ctx = TestContext {
+                    direction: entry.dir,
+                    transport: entry.transport,
+                    port: entry.port,
+                    target_addr: entry.target_addr,
                     timeout: Duration::from_millis(timeout_ms),
                 };
+                Box::pin(async move { (entry.id, proto.run(ctx).await) })
+            })
+            .collect();
 
-                let result = proto.run(ctx).await;
-
-                match &result {
-                    ProtocolResult::Pass { .. } => passed += 1,
-                    ProtocolResult::Fail { .. } => failed += 1,
-                    ProtocolResult::Error { .. } => errors += 1,
-                }
-
-                let report = protocol_result_to_report(id, &result);
-                channel.send(&report).await?;
+        while let Some((id, result)) = unordered.next().await {
+            match &result {
+                ProtocolResult::Pass { .. } => passed += 1,
+                ProtocolResult::Fail { .. } => failed += 1,
+                ProtocolResult::Error { .. } => errors += 1,
             }
-            Message::Done => break,
-            _ => return Err("unexpected message, expected Test or Done".into()),
+            let report = protocol_result_to_report(id, &result);
+            channel.send(&report).await?;
+        }
+
+        if done_after {
+            break;
         }
     }
 
@@ -188,6 +245,14 @@ struct BatchEntry<'a> {
     transport_str: &'a str,
     port: u16,
     direction: Direction,
+}
+
+struct ServerBatchEntry {
+    id: u32,
+    transport: Transport,
+    dir: Direction,
+    port: u16,
+    target_addr: SocketAddr,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -265,7 +330,8 @@ async fn execute_batch(
                             sent_bytes,
                             received_bytes,
                         } => {
-                            if !config.quiet {
+                            // Interactive mode: condense — skip per-line PASS
+                            if !interactive && !config.quiet {
                                 print_pass(format_args!(
                                     "{} {} {} {} (tx={} rx={})",
                                     entry.test_name,
@@ -467,6 +533,7 @@ pub async fn run_client(
             target: Some(config.target_addr.to_string()),
             timeout_ms: config.timeout_ms,
             client_version: PROTOCOL_VERSION,
+            parallel: config.parallel,
         })
         .await?;
 
