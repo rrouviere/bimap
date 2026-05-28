@@ -164,15 +164,16 @@ async fn udp_open_initiator(target: SocketAddr, timeout: std::time::Duration) ->
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
-        if let Err(e) =
-            tokio::time::timeout(timeout, socket.send_to(&[ONE_BYTE_PAYLOAD], target)).await
-        {
-            last_err = format!("send timeout: {e}");
-            continue;
-        }
-        if let Err(e) = socket.send_to(&[ONE_BYTE_PAYLOAD], target).await {
-            last_err = format!("send: {e}");
-            continue;
+        match tokio::time::timeout(timeout, socket.send_to(&[ONE_BYTE_PAYLOAD], target)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                last_err = format!("send: {e}");
+                continue;
+            }
+            Err(_) => {
+                last_err = "send timeout".into();
+                continue;
+            }
         }
 
         let mut buf = [0u8; 1];
@@ -253,19 +254,22 @@ async fn udp_open_target(port: u16, timeout: std::time::Duration) -> ProtocolRes
         };
     }
 
-    if let Err(e) = tokio::time::timeout(timeout, socket.send_to(&buf, src)).await {
-        return ProtocolResult::Fail {
-            reason: format!("send timeout: {e}"),
-            sent_bytes: 0,
-            received_bytes: 1,
-        };
-    }
-    if let Err(e) = socket.send_to(&buf, src).await {
-        return ProtocolResult::Fail {
-            reason: format!("send: {e}"),
-            sent_bytes: 0,
-            received_bytes: 1,
-        };
+    match tokio::time::timeout(timeout, socket.send_to(&buf, src)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            return ProtocolResult::Fail {
+                reason: format!("send: {e}"),
+                sent_bytes: 0,
+                received_bytes: 1,
+            };
+        }
+        Err(_) => {
+            return ProtocolResult::Fail {
+                reason: "send timeout".into(),
+                sent_bytes: 0,
+                received_bytes: 1,
+            };
+        }
     }
 
     ProtocolResult::Pass {
@@ -500,13 +504,16 @@ async fn udp_1kb_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
-        if let Err(e) = tokio::time::timeout(timeout, socket.send_to(&payload, target)).await {
-            last_err = format!("send timeout: {e}");
-            continue;
-        }
-        if let Err(e) = socket.send_to(&payload, target).await {
-            last_err = format!("send: {e}");
-            continue;
+        match tokio::time::timeout(timeout, socket.send_to(&payload, target)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                last_err = format!("send: {e}");
+                continue;
+            }
+            Err(_) => {
+                last_err = "send timeout".into();
+                continue;
+            }
         }
 
         let mut buf = vec![0u8; KB];
@@ -588,19 +595,22 @@ async fn udp_1kb_target(port: u16, timeout: std::time::Duration) -> ProtocolResu
         };
     }
 
-    if let Err(e) = tokio::time::timeout(timeout, socket.send_to(&buf[..n], src)).await {
-        return ProtocolResult::Fail {
-            reason: format!("send timeout: {e}"),
-            sent_bytes: 0,
-            received_bytes: n as u64,
-        };
-    }
-    if let Err(e) = socket.send_to(&buf[..n], src).await {
-        return ProtocolResult::Fail {
-            reason: format!("send: {e}"),
-            sent_bytes: 0,
-            received_bytes: n as u64,
-        };
+    match tokio::time::timeout(timeout, socket.send_to(&buf[..n], src)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            return ProtocolResult::Fail {
+                reason: format!("send: {e}"),
+                sent_bytes: 0,
+                received_bytes: n as u64,
+            };
+        }
+        Err(_) => {
+            return ProtocolResult::Fail {
+                reason: "send timeout".into(),
+                sent_bytes: 0,
+                received_bytes: n as u64,
+            };
+        }
     }
 
     ProtocolResult::Pass {
