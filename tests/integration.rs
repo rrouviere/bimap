@@ -118,6 +118,7 @@ async fn full_open_test_loopback() {
         port_ranges: vec![("tcp".to_string(), 25000, 25000)],
         bidir: false,
         timeout_ms: 5000,
+        parallel: 1,
         server_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         target_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         json: false,

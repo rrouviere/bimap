@@ -1,3 +1,4 @@
+use futures::future::join_all;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tracing::{debug, error, trace};
@@ -5,7 +6,7 @@ use tracing::{debug, error, trace};
 use crate::control::msg::{Message, PortRangeSpec, TestSummary, TransferReport};
 use crate::control::ControlChannel;
 use crate::output::{print_err, print_fail, print_pass, print_summary};
-use crate::test::{Direction, TestContext, TestRegistry, Transport};
+use crate::test::{Direction, TestContext, TestProtocol, TestRegistry, Transport};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolResult {
@@ -151,11 +152,119 @@ pub struct ClientConfig {
     pub port_ranges: Vec<(String, u16, u16)>,
     pub bidir: bool,
     pub timeout_ms: u64,
+    pub parallel: usize,
     pub server_addr: IpAddr,
     pub target_addr: IpAddr,
     pub json: bool,
     pub json_export: bool,
     pub verbose: u8,
+}
+
+struct BatchEntry<'a> {
+    id: u32,
+    test_name: &'a str,
+    transport: Transport,
+    transport_str: &'a str,
+    port: u16,
+    direction: Direction,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_batch(
+    channel: &mut ControlChannel,
+    batch: &[BatchEntry<'_>],
+    proto: &dyn TestProtocol,
+    config: &ClientConfig,
+    passed: &mut u32,
+    failed: &mut u32,
+    errors: &mut u32,
+    results: &mut Vec<TestEntry>,
+) -> Result<(), String> {
+    for entry in batch {
+        channel
+            .send(&Message::Test {
+                id: entry.id,
+                protocol: entry.test_name.to_string(),
+                transport: entry.transport_str.to_string(),
+                port: entry.port,
+                direction: entry.direction.as_str().to_string(),
+            })
+            .await?;
+    }
+
+    let futures: Vec<_> = batch
+        .iter()
+        .map(|entry| {
+            let target_addr = SocketAddr::new(config.target_addr, entry.port);
+            let ctx = TestContext {
+                direction: entry.direction,
+                transport: entry.transport,
+                port: entry.port,
+                target_addr,
+                timeout: Duration::from_millis(config.timeout_ms),
+            };
+            proto.run(ctx)
+        })
+        .collect();
+
+    let test_results = join_all(futures).await;
+
+    for (entry, result) in batch.iter().zip(test_results.iter()) {
+        let server_error =
+            match tokio::time::timeout(Duration::from_millis(config.timeout_ms), channel.recv())
+                .await
+            {
+                Ok(Ok(Message::Report { error, .. })) => error,
+                Ok(Ok(_)) => {
+                    error!("server: unexpected message");
+                    None
+                }
+                Ok(Err(e)) => {
+                    error!("server: {e}");
+                    None
+                }
+                Err(_) => {
+                    error!("server: timeout (no report within {}ms)", config.timeout_ms);
+                    None
+                }
+            };
+
+        match result {
+            ProtocolResult::Pass { .. } => *passed += 1,
+            ProtocolResult::Fail { .. } => *failed += 1,
+            ProtocolResult::Error { .. } => *errors += 1,
+        }
+
+        if let Some(ref err_msg) = server_error {
+            if !matches!(result, ProtocolResult::Pass { .. }) {
+                error!("server: {err_msg}");
+            }
+        }
+
+        if config.json && !config.json_export {
+            print_result(
+                entry.id,
+                entry.test_name,
+                entry.transport_str,
+                entry.port,
+                entry.direction,
+                result,
+                true,
+                server_error.as_deref(),
+            );
+        }
+
+        results.push(TestEntry {
+            protocol: entry.test_name.to_string(),
+            transport: entry.transport_str.to_string(),
+            port: entry.port,
+            direction: entry.direction,
+            result: result.clone(),
+            server_error: server_error.clone(),
+        });
+    }
+
+    Ok(())
 }
 
 pub async fn run_client(
@@ -243,182 +352,235 @@ pub async fn run_client(
                 continue;
             }
 
-            for port in *start..=*end {
-                let directions = if config.bidir {
-                    vec![Direction::ClientToServer, Direction::ServerToClient]
-                } else {
-                    vec![Direction::ClientToServer]
-                };
+            if config.parallel <= 1 {
+                for port in *start..=*end {
+                    let directions = if config.bidir {
+                        vec![Direction::ClientToServer, Direction::ServerToClient]
+                    } else {
+                        vec![Direction::ClientToServer]
+                    };
 
-                for dir in directions {
-                    let target_addr = SocketAddr::new(config.target_addr, port);
+                    for dir in directions {
+                        let target_addr = SocketAddr::new(config.target_addr, port);
 
-                    debug!("orchestrator sending test {} to server", id);
+                        debug!("orchestrator sending test {} to server", id);
 
-                    channel
-                        .send(&Message::Test {
-                            id,
-                            protocol: test_name.clone(),
-                            transport: transport_str.clone(),
-                            port,
-                            direction: dir.as_str().to_string(),
-                        })
-                        .await?;
+                        channel
+                            .send(&Message::Test {
+                                id,
+                                protocol: test_name.clone(),
+                                transport: transport_str.clone(),
+                                port,
+                                direction: dir.as_str().to_string(),
+                            })
+                            .await?;
 
-                    let quick =
-                        tokio::time::timeout(Duration::from_millis(500), channel.recv()).await;
+                        let quick =
+                            tokio::time::timeout(Duration::from_millis(500), channel.recv()).await;
 
-                    let (result, server_error) = match quick {
-                        Ok(Ok(Message::Report {
-                            error: Some(err),
-                            sent: None,
-                            received: None,
-                            ..
-                        })) => {
-                            if config.verbose >= 1 {
-                                debug!(
-                                    "skip test {} {}/{} {} (server: {err})",
+                        let (result, server_error) = match quick {
+                            Ok(Ok(Message::Report {
+                                error: Some(err),
+                                sent: None,
+                                received: None,
+                                ..
+                            })) => {
+                                if config.verbose >= 1 {
+                                    debug!(
+                                        "skip test {} {}/{} {} (server: {err})",
+                                        test_name,
+                                        transport_str,
+                                        port,
+                                        dir.as_str()
+                                    );
+                                }
+                                errors += 1;
+                                (
+                                    ProtocolResult::Error {
+                                        reason: format!("server: {err}"),
+                                    },
+                                    Some(err),
+                                )
+                            }
+                            Ok(Ok(Message::Report {
+                                error: Some(err),
+                                sent,
+                                received,
+                                ..
+                            })) => {
+                                let sb = sent.as_ref().map(|t| t.bytes).unwrap_or(0);
+                                let rb = received.as_ref().map(|t| t.bytes).unwrap_or(0);
+                                failed += 1;
+                                (
+                                    ProtocolResult::Fail {
+                                        reason: err.clone(),
+                                        sent_bytes: sb,
+                                        received_bytes: rb,
+                                    },
+                                    Some(err),
+                                )
+                            }
+                            Ok(Ok(Message::Report { sent, received, .. })) => {
+                                let sb = sent.as_ref().map(|t| t.bytes).unwrap_or(0);
+                                let rb = received.as_ref().map(|t| t.bytes).unwrap_or(0);
+                                passed += 1;
+                                (
+                                    ProtocolResult::Pass {
+                                        sent_bytes: sb,
+                                        received_bytes: rb,
+                                    },
+                                    None,
+                                )
+                            }
+                            _ => {
+                                let ctx = TestContext {
+                                    direction: dir,
+                                    transport,
+                                    port,
+                                    target_addr,
+                                    timeout: Duration::from_millis(config.timeout_ms),
+                                };
+
+                                trace!(
+                                    "test {} {}/{} port={} {}",
                                     test_name,
                                     transport_str,
                                     port,
+                                    port,
                                     dir.as_str()
                                 );
-                            }
-                            errors += 1;
-                            (
-                                ProtocolResult::Error {
-                                    reason: format!("server: {err}"),
-                                },
-                                Some(err),
-                            )
-                        }
-                        Ok(Ok(Message::Report {
-                            error: Some(err),
-                            sent,
-                            received,
-                            ..
-                        })) => {
-                            let sb = sent.as_ref().map(|t| t.bytes).unwrap_or(0);
-                            let rb = received.as_ref().map(|t| t.bytes).unwrap_or(0);
-                            failed += 1;
-                            (
-                                ProtocolResult::Fail {
-                                    reason: err.clone(),
-                                    sent_bytes: sb,
-                                    received_bytes: rb,
-                                },
-                                Some(err),
-                            )
-                        }
-                        Ok(Ok(Message::Report { sent, received, .. })) => {
-                            let sb = sent.as_ref().map(|t| t.bytes).unwrap_or(0);
-                            let rb = received.as_ref().map(|t| t.bytes).unwrap_or(0);
-                            passed += 1;
-                            (
-                                ProtocolResult::Pass {
-                                    sent_bytes: sb,
-                                    received_bytes: rb,
-                                },
-                                None,
-                            )
-                        }
-                        _ => {
-                            let ctx = TestContext {
-                                direction: dir,
-                                transport,
-                                port,
-                                target_addr,
-                                timeout: Duration::from_millis(config.timeout_ms),
-                            };
 
-                            trace!(
-                                "test {} {}/{} port={} {}",
+                                let r = match tokio::time::timeout(
+                                    Duration::from_millis(config.timeout_ms + 2000),
+                                    proto.run(ctx),
+                                )
+                                .await
+                                {
+                                    Ok(r) => r,
+                                    Err(_) => ProtocolResult::Fail {
+                                        reason: "timeout (test took too long)".into(),
+                                        sent_bytes: 0,
+                                        received_bytes: 0,
+                                    },
+                                };
+
+                                match &r {
+                                    ProtocolResult::Pass { .. } => passed += 1,
+                                    ProtocolResult::Fail { .. } => failed += 1,
+                                    ProtocolResult::Error { .. } => errors += 1,
+                                }
+
+                                debug!("orchestrator waiting for report {}", id);
+
+                                let se = match tokio::time::timeout(
+                                    Duration::from_millis(config.timeout_ms),
+                                    channel.recv(),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(Message::Report { error, .. })) => error,
+                                    Ok(Ok(_)) => {
+                                        error!("server: unexpected message (skipping)");
+                                        None
+                                    }
+                                    Ok(Err(e)) => {
+                                        error!("server: {e}");
+                                        None
+                                    }
+                                    Err(_) => {
+                                        error!(
+                                            "server: timeout (no report within {}ms)",
+                                            config.timeout_ms
+                                        );
+                                        None
+                                    }
+                                };
+
+                                (r, se)
+                            }
+                        };
+
+                        if let Some(ref err_msg) = server_error {
+                            if !matches!(result, ProtocolResult::Pass { .. }) {
+                                error!("server: {err_msg}");
+                            }
+                        }
+
+                        if config.json && !config.json_export {
+                            print_result(
+                                id,
                                 test_name,
                                 transport_str,
                                 port,
-                                port,
-                                dir.as_str()
+                                dir,
+                                &result,
+                                true,
+                                server_error.as_deref(),
                             );
-
-                            let r = match tokio::time::timeout(
-                                Duration::from_millis(config.timeout_ms + 2000),
-                                proto.run(ctx),
-                            )
-                            .await
-                            {
-                                Ok(r) => r,
-                                Err(_) => ProtocolResult::Fail {
-                                    reason: "timeout (test took too long)".into(),
-                                    sent_bytes: 0,
-                                    received_bytes: 0,
-                                },
-                            };
-
-                            match &r {
-                                ProtocolResult::Pass { .. } => passed += 1,
-                                ProtocolResult::Fail { .. } => failed += 1,
-                                ProtocolResult::Error { .. } => errors += 1,
-                            }
-
-                            debug!("orchestrator waiting for report {}", id);
-
-                            let se = match tokio::time::timeout(
-                                Duration::from_millis(config.timeout_ms),
-                                channel.recv(),
-                            )
-                            .await
-                            {
-                                Ok(Ok(Message::Report { error, .. })) => error,
-                                Ok(Ok(_)) => {
-                                    error!("server: unexpected message (skipping)");
-                                    None
-                                }
-                                Ok(Err(e)) => {
-                                    error!("server: {e}");
-                                    None
-                                }
-                                Err(_) => {
-                                    error!(
-                                        "server: timeout (no report within {}ms)",
-                                        config.timeout_ms
-                                    );
-                                    None
-                                }
-                            };
-
-                            (r, se)
                         }
+
+                        results.push(TestEntry {
+                            protocol: test_name.clone(),
+                            transport: transport_str.clone(),
+                            port,
+                            direction: dir,
+                            result,
+                            server_error,
+                        });
+
+                        id += 1;
+                    }
+                }
+            } else {
+                let mut batch: Vec<BatchEntry> = Vec::new();
+                let batch_size = config.parallel.max(1);
+
+                for port in *start..=*end {
+                    let directions = if config.bidir {
+                        vec![Direction::ClientToServer, Direction::ServerToClient]
+                    } else {
+                        vec![Direction::ClientToServer]
                     };
 
-                    if let Some(ref err_msg) = server_error {
-                        if !matches!(result, ProtocolResult::Pass { .. }) {
-                            error!("server: {err_msg}");
-                        }
-                    }
-
-                    if config.json && !config.json_export {
-                        print_result(
+                    for dir in directions {
+                        batch.push(BatchEntry {
                             id,
                             test_name,
+                            transport,
                             transport_str,
                             port,
-                            dir,
-                            &result,
-                            true,
-                            server_error.as_deref(),
-                        );
+                            direction: dir,
+                        });
+                        id += 1;
+
+                        if batch.len() >= batch_size {
+                            execute_batch(
+                                &mut channel,
+                                &batch,
+                                proto,
+                                config,
+                                &mut passed,
+                                &mut failed,
+                                &mut errors,
+                                &mut results,
+                            )
+                            .await?;
+                            batch.clear();
+                        }
                     }
-
-                    results.push(TestEntry {
-                        protocol: test_name.clone(),
-                        transport: transport_str.clone(),
-                        port,
-                        direction: dir,
-                        result,
-                        server_error,
-                    });
-
-                    id += 1;
+                }
+                if !batch.is_empty() {
+                    execute_batch(
+                        &mut channel,
+                        &batch,
+                        proto,
+                        config,
+                        &mut passed,
+                        &mut failed,
+                        &mut errors,
+                        &mut results,
+                    )
+                    .await?;
                 }
             }
         }

@@ -73,6 +73,10 @@ pub enum Command {
         #[arg(long)]
         json_export: bool,
 
+        /// Number of tests to run in parallel (default: 10, 1 = sequential)
+        #[arg(long, default_value_t = 10)]
+        parallel: usize,
+
         /// Verbose debug output. -v = debug, -vv = trace
         #[arg(short = 'v', long, action = clap::ArgAction::Count, default_value_t = 0)]
         verbose: u8,

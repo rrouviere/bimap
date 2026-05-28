@@ -120,6 +120,7 @@ fn main() {
                 fingerprint,
                 json,
                 json_export,
+                parallel,
                 verbose,
             } => {
                 let (server, port) = if let Some(ref cs) = control_server {
@@ -272,6 +273,7 @@ fn main() {
                     port_ranges,
                     bidir,
                     timeout_ms: timeout,
+                    parallel,
                     server_addr: server,
                     target_addr: target,
                     json,
