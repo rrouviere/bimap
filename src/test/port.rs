@@ -117,13 +117,22 @@ async fn tcp_open_target(port: u16, timeout: std::time::Duration) -> ProtocolRes
         Ok(Ok((mut stream, _addr))) => {
             let mut buf = [0u8; 1];
             match tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await {
-                Ok(Ok(_)) => {
-                    let _ = tokio::time::timeout(timeout, stream.write_all(&buf)).await;
-                    ProtocolResult::Pass {
+                Ok(Ok(_)) => match tokio::time::timeout(timeout, stream.write_all(&buf)).await {
+                    Ok(Ok(())) => ProtocolResult::Pass {
                         sent_bytes: 1,
                         received_bytes: 1,
-                    }
-                }
+                    },
+                    Ok(Err(e)) => ProtocolResult::Fail {
+                        reason: format!("write: {e}"),
+                        sent_bytes: 1,
+                        received_bytes: 1,
+                    },
+                    Err(_) => ProtocolResult::Fail {
+                        reason: "timeout".into(),
+                        sent_bytes: 1,
+                        received_bytes: 1,
+                    },
+                },
                 Ok(Err(e)) => ProtocolResult::Fail {
                     reason: format!("read: {e}"),
                     sent_bytes: 0,
