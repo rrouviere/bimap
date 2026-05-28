@@ -61,6 +61,10 @@ pub enum Command {
         #[arg(long)]
         json: bool,
 
+        /// Export all results as a single JSON object at the end
+        #[arg(long)]
+        json_export: bool,
+
         /// Suppress passing tests from output
         #[arg(short = 'q', long)]
         quiet: bool,

@@ -119,6 +119,7 @@ async fn full_open_test_loopback() {
         timeout_ms: 5000,
         server_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         json: false,
+        json_export: false,
         verbose: false,
     };
     let client_summary = orchestrator::run_client(client, &registry, &config)

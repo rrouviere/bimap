@@ -105,6 +105,7 @@ fn main() {
                 timeout,
                 fingerprint,
                 json,
+                json_export,
                 quiet: _,
                 verbose,
             } => {
@@ -223,6 +224,7 @@ fn main() {
                     timeout_ms: timeout,
                     server_addr: server,
                     json,
+                    json_export,
                     verbose,
                 };
 

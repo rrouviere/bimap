@@ -21,6 +21,43 @@ pub enum ProtocolResult {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct TestEntry {
+    pub protocol: String,
+    pub transport: String,
+    pub port: u16,
+    pub direction: Direction,
+    pub result: ProtocolResult,
+    pub server_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum PortRange {
+    Single(u16),
+    Range(u16, u16),
+}
+
+impl std::fmt::Display for PortRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PortRange::Single(p) => write!(f, "{p}"),
+            PortRange::Range(s, e) => write!(f, "{s}-{e}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MergedEntry {
+    pub protocol: String,
+    pub transport: String,
+    pub ports: PortRange,
+    pub direction: Direction,
+    pub status: String,
+    pub reason: String,
+    pub count: u64,
+    pub server_error: Option<String>,
+}
+
 pub async fn run_server(
     mut channel: ControlChannel,
     registry: &TestRegistry,
@@ -112,6 +149,7 @@ pub struct ClientConfig {
     pub timeout_ms: u64,
     pub server_addr: IpAddr,
     pub json: bool,
+    pub json_export: bool,
     pub verbose: bool,
 }
 
@@ -183,6 +221,7 @@ pub async fn run_client(
     let mut failed = 0u32;
     let mut errors = 0u32;
     let mut id = 0u32;
+    let mut results: Vec<TestEntry> = Vec::new();
 
     for test_name in &config.tests {
         let proto = registry
@@ -254,7 +293,6 @@ pub async fn run_client(
                         eprintln!("[v] orchestrator waiting for report {}", id);
                     }
 
-                    // Read server's Report
                     let server_error = match channel.recv().await? {
                         Message::Report { error, .. } => error,
                         _ => return Err("expected Report".into()),
@@ -266,16 +304,27 @@ pub async fn run_client(
                         }
                     }
 
-                    print_result(
-                        id,
-                        test_name,
-                        transport_str,
+                    if config.json && !config.json_export {
+                        print_result(
+                            id,
+                            test_name,
+                            transport_str,
+                            port,
+                            dir,
+                            &result,
+                            true,
+                            server_error.as_deref(),
+                        );
+                    }
+
+                    results.push(TestEntry {
+                        protocol: test_name.clone(),
+                        transport: transport_str.clone(),
                         port,
-                        dir,
-                        &result,
-                        config.json,
-                        server_error.as_deref(),
-                    );
+                        direction: dir,
+                        result,
+                        server_error,
+                    });
 
                     id += 1;
                 }
@@ -283,8 +332,13 @@ pub async fn run_client(
         }
     }
 
-    if passed == 0 && failed == 0 && errors == 0 {
-        return Err("no tests matched the given port ranges".into());
+    let merged = merge_into_ranges(&results);
+
+    if config.json_export {
+        print_json_export(&merged, passed, failed, errors);
+    } else if !config.json {
+        print_merged_results(&merged);
+        print_summary(passed, failed, errors);
     }
 
     channel.send(&Message::Done).await?;
@@ -411,6 +465,155 @@ fn print_result(
             }
         }
     }
+}
+
+fn merge_into_ranges(results: &[TestEntry]) -> Vec<MergedEntry> {
+    if results.is_empty() {
+        return vec![];
+    }
+
+    let mut sorted: Vec<&TestEntry> = results.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.protocol
+            .cmp(&b.protocol)
+            .then(a.transport.cmp(&b.transport))
+            .then(a.direction.as_str().cmp(b.direction.as_str()))
+            .then(a.port.cmp(&b.port))
+    });
+
+    let mut merged: Vec<MergedEntry> = vec![];
+
+    for entry in sorted {
+        let (status, reason) = match &entry.result {
+            ProtocolResult::Pass { .. } => ("pass", String::new()),
+            ProtocolResult::Fail { reason, .. } => ("fail", reason.clone()),
+            ProtocolResult::Error { reason } => ("error", reason.clone()),
+        };
+
+        let should_merge = merged
+            .last()
+            .map(|last| {
+                last.protocol == entry.protocol
+                    && last.transport == entry.transport
+                    && last.direction == entry.direction
+                    && last.status == status
+                    && last.reason == reason
+                    && match &last.ports {
+                        PortRange::Range(_, e) => *e + 1 == entry.port,
+                        PortRange::Single(p) => *p + 1 == entry.port,
+                    }
+            })
+            .unwrap_or(false);
+
+        if should_merge {
+            if let Some(last) = merged.last_mut() {
+                last.ports = match &last.ports {
+                    PortRange::Single(p) => PortRange::Range(*p, entry.port),
+                    PortRange::Range(s, _) => PortRange::Range(*s, entry.port),
+                };
+                last.count += 1;
+            }
+        } else {
+            merged.push(MergedEntry {
+                protocol: entry.protocol.clone(),
+                transport: entry.transport.clone(),
+                ports: PortRange::Single(entry.port),
+                direction: entry.direction,
+                status: status.to_string(),
+                reason,
+                count: 1,
+                server_error: entry.server_error.clone(),
+            });
+        }
+    }
+
+    merged
+}
+
+fn print_merged_results(merged: &[MergedEntry]) {
+    for m in merged {
+        match m.status.as_str() {
+            "pass" => println!(
+                "PASS {} {} {} {} ({} tests)",
+                m.protocol,
+                m.transport,
+                m.ports,
+                m.direction.as_str(),
+                m.count
+            ),
+            "fail" => println!(
+                "FAIL {} {} {} {} {} ({} tests)",
+                m.protocol,
+                m.transport,
+                m.ports,
+                m.direction.as_str(),
+                m.reason,
+                m.count
+            ),
+            "error" => println!(
+                "ERR  {} {} {} {} {}",
+                m.protocol,
+                m.transport,
+                m.ports,
+                m.direction.as_str(),
+                m.reason
+            ),
+            _ => {}
+        }
+    }
+}
+
+fn print_summary(passed: u32, failed: u32, errors: u32) {
+    println!("--- {passed} passed, {failed} failed, {errors} errors ---");
+}
+
+fn print_json_export(merged: &[MergedEntry], passed: u32, failed: u32, errors: u32) {
+    let results_arr: Vec<serde_json::Value> = merged
+        .iter()
+        .map(|m| {
+            let mut obj = serde_json::json!({
+                "protocol": m.protocol,
+                "transport": m.transport,
+                "direction": m.direction.as_str(),
+                "status": m.status,
+            });
+            if m.status == "fail" || m.status == "error" {
+                obj["reason"] = serde_json::json!(m.reason);
+            }
+            match &m.ports {
+                PortRange::Single(p) => {
+                    obj["port"] = serde_json::json!(p);
+                }
+                PortRange::Range(s, e) => {
+                    obj["port_start"] = serde_json::json!(s);
+                    obj["port_end"] = serde_json::json!(e);
+                    obj["count"] = serde_json::json!(m.count);
+                }
+            }
+            if let Some(ref err) = m.server_error {
+                obj["server_error"] = serde_json::json!(err);
+            }
+            obj
+        })
+        .collect();
+
+    let output = serde_json::json!({
+        "bimap": {
+            "version": "0.2.4",
+            "mode": "client"
+        },
+        "summary": {
+            "passed": passed,
+            "failed": failed,
+            "errors": errors
+        },
+        "results": results_arr,
+    });
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("json serialization")
+    );
 }
 
 #[cfg(test)]
