@@ -209,7 +209,10 @@ async fn execute_batch(
         })
         .collect();
 
-    let mut client_results: HashMap<u32, ProtocolResult> = HashMap::new();
+    let first_id = batch.first().map(|e| e.id).unwrap_or(0);
+    let mut pending: HashMap<u32, ProtocolResult> = HashMap::new();
+    let mut next_print = first_id;
+
     while let Some((id, result)) = unordered.next().await {
         match &result {
             ProtocolResult::Pass { .. } => *passed += 1,
@@ -217,68 +220,69 @@ async fn execute_batch(
             ProtocolResult::Error { .. } => *errors += 1,
         }
 
-        // Print per-test result immediately
-        if config.json && !config.json_export {
-            if let Some(entry) = batch.iter().find(|e| e.id == id) {
-                print_result(
-                    entry.id,
-                    entry.test_name,
-                    entry.transport_str,
-                    entry.port,
-                    entry.direction,
-                    &result,
-                    true,
-                    None,
-                );
-            }
-        } else if !config.json_export {
-            if let Some(entry) = batch.iter().find(|e| e.id == id) {
-                match &result {
-                    ProtocolResult::Pass {
-                        sent_bytes,
-                        received_bytes,
-                    } => {
-                        print_pass(format_args!(
-                            "{} {} {} {} (tx={} rx={})",
-                            entry.test_name,
-                            entry.transport_str,
-                            entry.port,
-                            entry.direction.as_str(),
+        pending.insert(id, result);
+
+        // Drain all sequentially available results
+        while let Some(result) = pending.remove(&next_print) {
+            if let Some(entry) = batch.iter().find(|e| e.id == next_print) {
+                if config.json && !config.json_export {
+                    print_result(
+                        entry.id,
+                        entry.test_name,
+                        entry.transport_str,
+                        entry.port,
+                        entry.direction,
+                        &result,
+                        true,
+                        None,
+                    );
+                } else if !config.json_export {
+                    match &result {
+                        ProtocolResult::Pass {
                             sent_bytes,
-                            received_bytes
-                        ));
-                    }
-                    ProtocolResult::Fail {
-                        reason,
-                        sent_bytes,
-                        received_bytes,
-                    } => {
-                        print_fail(format_args!(
-                            "{} {} {} {} {} (tx={} rx={})",
-                            entry.test_name,
-                            entry.transport_str,
-                            entry.port,
-                            entry.direction.as_str(),
+                            received_bytes,
+                        } => {
+                            print_pass(format_args!(
+                                "{} {} {} {} (tx={} rx={})",
+                                entry.test_name,
+                                entry.transport_str,
+                                entry.port,
+                                entry.direction.as_str(),
+                                sent_bytes,
+                                received_bytes
+                            ));
+                        }
+                        ProtocolResult::Fail {
                             reason,
                             sent_bytes,
-                            received_bytes
-                        ));
-                    }
-                    ProtocolResult::Error { reason } => {
-                        print_err(format_args!(
-                            "{} {} {} {} {}",
-                            entry.test_name,
-                            entry.transport_str,
-                            entry.port,
-                            entry.direction.as_str(),
-                            reason
-                        ));
+                            received_bytes,
+                        } => {
+                            print_fail(format_args!(
+                                "{} {} {} {} {} (tx={} rx={})",
+                                entry.test_name,
+                                entry.transport_str,
+                                entry.port,
+                                entry.direction.as_str(),
+                                reason,
+                                sent_bytes,
+                                received_bytes
+                            ));
+                        }
+                        ProtocolResult::Error { reason } => {
+                            print_err(format_args!(
+                                "{} {} {} {} {}",
+                                entry.test_name,
+                                entry.transport_str,
+                                entry.port,
+                                entry.direction.as_str(),
+                                reason
+                            ));
+                        }
                     }
                 }
             }
+            next_print += 1;
         }
-
-        client_results.insert(id, result);
     }
 
     // Read server Reports in order, match by ID
@@ -303,14 +307,14 @@ async fn execute_batch(
             };
 
         if let Some(ref err_msg) = server_error {
-            if let Some(result) = client_results.get(&entry.id) {
+            if let Some(result) = pending.get(&entry.id) {
                 if !matches!(result, ProtocolResult::Pass { .. }) {
                     error!("server: {err_msg}");
                 }
             }
         }
 
-        if let Some(result) = client_results.remove(&entry.id) {
+        if let Some(result) = pending.remove(&entry.id) {
             results.push(TestEntry {
                 protocol: entry.test_name.to_string(),
                 transport: entry.transport_str.to_string(),
@@ -575,6 +579,49 @@ pub async fn run_client(
                                 true,
                                 server_error.as_deref(),
                             );
+                        } else if !config.json_export {
+                            match &result {
+                                ProtocolResult::Pass {
+                                    sent_bytes,
+                                    received_bytes,
+                                } => {
+                                    print_pass(format_args!(
+                                        "{} {} {} {} (tx={} rx={})",
+                                        test_name,
+                                        transport_str,
+                                        port,
+                                        dir.as_str(),
+                                        sent_bytes,
+                                        received_bytes
+                                    ));
+                                }
+                                ProtocolResult::Fail {
+                                    reason,
+                                    sent_bytes,
+                                    received_bytes,
+                                } => {
+                                    print_fail(format_args!(
+                                        "{} {} {} {} {} (tx={} rx={})",
+                                        test_name,
+                                        transport_str,
+                                        port,
+                                        dir.as_str(),
+                                        reason,
+                                        sent_bytes,
+                                        received_bytes
+                                    ));
+                                }
+                                ProtocolResult::Error { reason } => {
+                                    print_err(format_args!(
+                                        "{} {} {} {} {}",
+                                        test_name,
+                                        transport_str,
+                                        port,
+                                        dir.as_str(),
+                                        reason
+                                    ));
+                                }
+                            }
                         }
 
                         results.push(TestEntry {
@@ -649,7 +696,6 @@ pub async fn run_client(
     if config.json_export {
         print_json_export(&merged, passed, failed, errors);
     } else if !config.json {
-        print_merged_results(&merged);
         print_user_summary(passed, failed, errors);
     }
 
@@ -840,39 +886,6 @@ fn merge_into_ranges(results: &[TestEntry]) -> Vec<MergedEntry> {
     }
 
     merged
-}
-
-fn print_merged_results(merged: &[MergedEntry]) {
-    for m in merged {
-        match m.status.as_str() {
-            "pass" => print_pass(format_args!(
-                "{} {} {} {} ({} tests)",
-                m.protocol,
-                m.transport,
-                m.ports,
-                m.direction.as_str(),
-                m.count
-            )),
-            "fail" => print_fail(format_args!(
-                "{} {} {} {} {} ({} tests)",
-                m.protocol,
-                m.transport,
-                m.ports,
-                m.direction.as_str(),
-                m.reason,
-                m.count
-            )),
-            "error" => print_err(format_args!(
-                "{} {} {} {} {}",
-                m.protocol,
-                m.transport,
-                m.ports,
-                m.direction.as_str(),
-                m.reason
-            )),
-            _ => {}
-        }
-    }
 }
 
 fn print_user_summary(passed: u32, failed: u32, errors: u32) {
