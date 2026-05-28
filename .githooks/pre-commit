@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+echo "[pre-commit] fmt..."
+cargo fmt -- --check
+
+echo "[pre-commit] clippy..."
+cargo clippy --all-targets -- -D warnings
+
+echo "[pre-commit] unit tests..."
+cargo test --lib
+
+echo "[pre-commit] build release..."
+cargo build --release --quiet
+
+echo "[pre-commit] integration tests..."
+cargo test --test integration
+
+echo "[pre-commit] e2e tests..."
+cargo test --test e2e
+
+echo "[pre-commit] fault tests..."
+cargo test --test fault
+
+echo "[pre-commit] ok"
