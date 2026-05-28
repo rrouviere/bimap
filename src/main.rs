@@ -122,6 +122,7 @@ fn main() {
                 json_export,
                 parallel,
                 verbose,
+                quiet,
             } => {
                 let (server, port) = if let Some(ref cs) = control_server {
                     let (ip_str, port_str) = match cs.split_once(':') {
@@ -279,6 +280,7 @@ fn main() {
                     json,
                     json_export,
                     verbose,
+                    quiet,
                 };
 
                 let registry = build_registry();

@@ -125,6 +125,7 @@ async fn full_open_test_loopback() {
         json: false,
         json_export: false,
         verbose: 0,
+        quiet: false,
     };
     let client_summary = orchestrator::run_client(client, &registry, &config)
         .await

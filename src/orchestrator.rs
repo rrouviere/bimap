@@ -1,13 +1,16 @@
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tracing::{debug, trace};
 
 use crate::control::msg::{Message, PortRangeSpec, TestSummary, TransferReport};
 use crate::control::ControlChannel;
-use crate::output::{print_err, print_fail, print_pass, print_summary};
+use crate::output::{
+    finish_fail_line, format_port_ranges, is_interactive, print_err, print_fail, print_fail_live,
+    print_pass, print_summary,
+};
 use crate::test::{Direction, TestContext, TestProtocol, TestRegistry, Transport};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +164,7 @@ pub struct ClientConfig {
     pub json: bool,
     pub json_export: bool,
     pub verbose: u8,
+    pub quiet: bool,
 }
 
 struct BatchEntry<'a> {
@@ -210,9 +214,13 @@ async fn execute_batch(
         })
         .collect();
 
+    use std::collections::HashMap as PortMap;
+
     let first_id = batch.first().map(|e| e.id).unwrap_or(0);
     let mut pending: HashMap<u32, ProtocolResult> = HashMap::new();
     let mut next_print = first_id;
+    let interactive = is_interactive() && !config.json && !config.json_export;
+    let mut fail_map: PortMap<(String, String, String, String), Vec<u16>> = PortMap::new();
 
     while let Some((id, result)) = unordered.next().await {
         match &result {
@@ -243,41 +251,81 @@ async fn execute_batch(
                             sent_bytes,
                             received_bytes,
                         } => {
-                            print_pass(format_args!(
-                                "{} {} {} {} (tx={} rx={})",
-                                entry.test_name,
-                                entry.transport_str,
-                                entry.port,
-                                entry.direction.as_str(),
-                                sent_bytes,
-                                received_bytes
-                            ));
+                            if !config.quiet {
+                                print_pass(format_args!(
+                                    "{} {} {} {} (tx={} rx={})",
+                                    entry.test_name,
+                                    entry.transport_str,
+                                    entry.port,
+                                    entry.direction.as_str(),
+                                    sent_bytes,
+                                    received_bytes
+                                ));
+                            }
                         }
                         ProtocolResult::Fail {
                             reason,
                             sent_bytes,
                             received_bytes,
                         } => {
-                            print_fail(format_args!(
-                                "{} {} {} {} {} (tx={} rx={})",
-                                entry.test_name,
-                                entry.transport_str,
-                                entry.port,
-                                entry.direction.as_str(),
-                                reason,
-                                sent_bytes,
-                                received_bytes
-                            ));
+                            if interactive {
+                                let key = (
+                                    entry.test_name.to_string(),
+                                    entry.transport_str.to_string(),
+                                    entry.direction.as_str().to_string(),
+                                    reason.clone(),
+                                );
+                                fail_map.entry(key).or_default().push(entry.port);
+                                let mut line = String::new();
+                                for ((tn, ts, dir, r), ports) in &fail_map {
+                                    if !line.is_empty() {
+                                        line.push_str("  ");
+                                    }
+                                    let ranges = format_port_ranges(ports);
+                                    line.push_str(&format!("{tn} {ts} {ranges} {dir} {r}"));
+                                }
+                                print_fail_live(&line);
+                            } else {
+                                print_fail(format_args!(
+                                    "{} {} {} {} {} (tx={} rx={})",
+                                    entry.test_name,
+                                    entry.transport_str,
+                                    entry.port,
+                                    entry.direction.as_str(),
+                                    reason,
+                                    sent_bytes,
+                                    received_bytes
+                                ));
+                            }
                         }
                         ProtocolResult::Error { reason } => {
-                            print_err(format_args!(
-                                "{} {} {} {} {}",
-                                entry.test_name,
-                                entry.transport_str,
-                                entry.port,
-                                entry.direction.as_str(),
-                                reason
-                            ));
+                            if interactive {
+                                let key = (
+                                    entry.test_name.to_string(),
+                                    entry.transport_str.to_string(),
+                                    entry.direction.as_str().to_string(),
+                                    reason.clone(),
+                                );
+                                fail_map.entry(key).or_default().push(entry.port);
+                                let mut line = String::new();
+                                for ((tn, ts, dir, r), ports) in &fail_map {
+                                    if !line.is_empty() {
+                                        line.push_str("  ");
+                                    }
+                                    let ranges = format_port_ranges(ports);
+                                    line.push_str(&format!("{tn} {ts} {ranges} {dir} {r}"));
+                                }
+                                print_fail_live(&line);
+                            } else if !config.quiet {
+                                print_err(format_args!(
+                                    "{} {} {} {} {}",
+                                    entry.test_name,
+                                    entry.transport_str,
+                                    entry.port,
+                                    entry.direction.as_str(),
+                                    reason
+                                ));
+                            }
                         }
                     }
                 }
@@ -286,44 +334,68 @@ async fn execute_batch(
         }
     }
 
-    // Read server Reports in order, match by ID
-    for entry in batch {
-        let server_error =
-            match tokio::time::timeout(Duration::from_millis(config.timeout_ms), channel.recv())
-                .await
-            {
-                Ok(Ok(Message::Report { error, .. })) => error,
-                Ok(Ok(_)) => {
-                    debug!("server: unexpected message");
-                    None
-                }
-                Ok(Err(e)) => {
-                    debug!("server: {e}");
-                    None
-                }
-                Err(_) => {
-                    debug!("server: timeout (no report within {}ms)", config.timeout_ms);
-                    None
-                }
-            };
+    if interactive {
+        finish_fail_line();
+        // Print consolidated fail lines
+        for ((tn, ts, dir, r), ports) in &fail_map {
+            let ranges = format_port_ranges(ports);
+            print_fail(format_args!("{tn} {ts} {ranges} {dir} {r}"));
+        }
+    }
 
-        if let Some(ref err_msg) = server_error {
-            if let Some(result) = pending.get(&entry.id) {
-                if !matches!(result, ProtocolResult::Pass { .. }) {
-                    debug!("server: {err_msg}");
+    // Read server Reports, match by ID (not position) to avoid desync
+    let mut expected: HashSet<u32> = batch.iter().map(|e| e.id).collect();
+    // Use a slightly longer timeout than the per-test timeout to avoid
+    // racing with the last server report (both fire at ~same time).
+    let recv_timeout = Duration::from_millis(config.timeout_ms + 100);
+    while !expected.is_empty() {
+        let recv_result = tokio::time::timeout(recv_timeout, channel.recv()).await;
+
+        match recv_result {
+            Ok(Ok(Message::Report { error, id, .. })) => {
+                if expected.remove(&id) {
+                    if let Some(result) = pending.remove(&id) {
+                        if let Some(entry) = batch.iter().find(|e| e.id == id) {
+                            if let Some(ref err_msg) = error {
+                                if !matches!(result, ProtocolResult::Pass { .. }) {
+                                    debug!("server: {err_msg}");
+                                }
+                            }
+                            results.push(TestEntry {
+                                protocol: entry.test_name.to_string(),
+                                transport: entry.transport_str.to_string(),
+                                port: entry.port,
+                                direction: entry.direction,
+                                result,
+                                server_error: error,
+                            });
+                        }
+                    }
                 }
             }
-        }
-
-        if let Some(result) = pending.remove(&entry.id) {
-            results.push(TestEntry {
-                protocol: entry.test_name.to_string(),
-                transport: entry.transport_str.to_string(),
-                port: entry.port,
-                direction: entry.direction,
-                result,
-                server_error,
-            });
+            Ok(Ok(_)) => {
+                debug!("server: unexpected message");
+            }
+            Ok(Err(e)) => {
+                debug!("server: {e}");
+            }
+            Err(_) => {
+                // Server didn't respond in time — use local results
+                for id in expected.drain() {
+                    if let Some(result) = pending.remove(&id) {
+                        if let Some(entry) = batch.iter().find(|e| e.id == id) {
+                            results.push(TestEntry {
+                                protocol: entry.test_name.to_string(),
+                                transport: entry.transport_str.to_string(),
+                                port: entry.port,
+                                direction: entry.direction,
+                                result,
+                                server_error: None,
+                            });
+                        }
+                    }
+                }
+            }
         }
     }
 

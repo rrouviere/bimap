@@ -80,6 +80,10 @@ pub enum Command {
         /// Verbose debug output. -v = debug, -vv = trace
         #[arg(short = 'v', long, action = clap::ArgAction::Count, default_value_t = 0)]
         verbose: u8,
+
+        /// Only show failures and final summary (suppress PASS lines)
+        #[arg(short = 'q', long)]
+        quiet: bool,
     },
 }
 
