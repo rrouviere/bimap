@@ -57,9 +57,9 @@ Fix: eliminate 300+ LOC of manual wire-format parsing. Reliability increase.
 
 | Step | Agent | Worktree | Deliverable | Status |
 |------|-------|----------|-------------|--------|
-| 5a | QA | `qa/udp-retry` | Failing test proving UDP target race (DNS UDP, open UDP) | ⏳ PENDING |
-| 5b | Dev | `fix/udp-retry` | Add retry loop to UDP target recv_from | ⏳ PENDING |
-| 5c | User persona | — | Final real-world validation after fix | ⏳ PENDING |
+| 5a | QA | `qa/udp-retry` | Failing test proving UDP target race | ✅ DONE — 8/10 iterations fail without fix |
+| 5b | Dev | `fix/udp-retry` | Add retry loop to UDP target recv_from | ✅ DONE — commit bd72f64 |
+| 5c | User persona | — | Final real-world validation after fix | ⏳ IN PROGRESS |
 
 ---
 
