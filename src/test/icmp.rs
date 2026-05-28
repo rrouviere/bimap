@@ -5,8 +5,13 @@ use async_trait::async_trait;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-fn is_root() -> bool {
-    unsafe { libc::geteuid() == 0 }
+fn has_icmp_capability() -> bool {
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_ICMP) };
+    if fd < 0 {
+        return false;
+    }
+    unsafe { libc::close(fd) };
+    true
 }
 
 fn create_raw_socket() -> Result<i32, String> {
@@ -73,9 +78,9 @@ async fn send_icmp_echo(
     timeout: Duration,
     verbose: bool,
 ) -> ProtocolResult {
-    if !is_root() {
+    if !has_icmp_capability() {
         return ProtocolResult::Error {
-            reason: "permission: ICMP requires root".into(),
+            reason: "permission: ICMP requires root or CAP_NET_RAW".into(),
         };
     }
 
@@ -191,8 +196,15 @@ async fn send_icmp_echo(
         }
     };
 
-    if icmp_packet.get_icmp_type().0 == ICMP_TYPE_ECHO_REPLY {
+    let reply_id = u16::from_be_bytes([recv_buf[icmp_offset + 4], recv_buf[icmp_offset + 5]]);
+    if icmp_packet.get_icmp_type().0 == ICMP_TYPE_ECHO_REPLY && reply_id == id {
         ProtocolResult::Pass {
+            sent_bytes: sent as u64,
+            received_bytes: n as u64,
+        }
+    } else if icmp_packet.get_icmp_type().0 == ICMP_TYPE_ECHO_REPLY {
+        ProtocolResult::Fail {
+            reason: format!("unexpected ICMP identifier: {}, expected {}", reply_id, id),
             sent_bytes: sent as u64,
             received_bytes: n as u64,
         }
@@ -262,9 +274,9 @@ impl TestProtocol for IcmpFullTest {
     }
 
     async fn run(&self, ctx: TestContext) -> ProtocolResult {
-        if !is_root() {
+        if !has_icmp_capability() {
             return ProtocolResult::Error {
-                reason: "permission: ICMP requires root".into(),
+                reason: "permission: ICMP requires root or CAP_NET_RAW".into(),
             };
         }
 
@@ -321,13 +333,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_root_returns_bool() {
-        let _result = is_root();
+    fn has_icmp_capability_returns_bool() {
+        let _result = has_icmp_capability();
     }
 
     #[test]
     fn create_raw_socket_fails_as_nonroot() {
-        if is_root() {
+        if has_icmp_capability() {
             return;
         }
         let result = create_raw_socket();
