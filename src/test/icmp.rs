@@ -6,12 +6,17 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 fn has_icmp_capability() -> bool {
-    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_ICMP) };
-    if fd < 0 {
-        return false;
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
+    if fd >= 0 {
+        unsafe { libc::close(fd) };
+        return true;
     }
-    unsafe { libc::close(fd) };
-    true
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_ICMP) };
+    if fd >= 0 {
+        unsafe { libc::close(fd) };
+        return true;
+    }
+    false
 }
 
 fn create_raw_socket() -> Result<i32, String> {
@@ -78,6 +83,94 @@ async fn send_icmp_echo(
     timeout: Duration,
     verbose: bool,
 ) -> ProtocolResult {
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
+    if fd < 0 {
+        return send_icmp_echo_raw(dest, id, seq, icmp_type, timeout, verbose).await;
+    }
+
+    if let Err(e) = unsafe { set_socket_timeout(fd, timeout) } {
+        unsafe { libc::close(fd) };
+        return ProtocolResult::Error { reason: e };
+    }
+
+    let payload = b"bimap";
+    let sa = to_sockaddr_in(dest);
+
+    if verbose {
+        eprintln!("[v] icmp ping-socket sending echo request to {dest}");
+    }
+
+    let sent = unsafe {
+        libc::sendto(
+            fd,
+            payload.as_ptr() as *const libc::c_void,
+            payload.len(),
+            0,
+            &sa as *const _ as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        )
+    };
+    if sent < 0 {
+        let err = std::io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return ProtocolResult::Error {
+            reason: format!("sendto: {err}"),
+        };
+    }
+
+    if verbose {
+        eprintln!(
+            "[v] icmp waiting for echo reply (timeout={}ms)",
+            timeout.as_millis()
+        );
+    }
+
+    let mut recv_buf = [0u8; 1500];
+    let received = unsafe {
+        libc::recvfrom(
+            fd,
+            recv_buf.as_mut_ptr() as *mut libc::c_void,
+            recv_buf.len(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+
+    unsafe { libc::close(fd) };
+
+    if received < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::WouldBlock
+            || err.kind() == std::io::ErrorKind::TimedOut
+        {
+            return ProtocolResult::Fail {
+                reason: "timeout".into(),
+                sent_bytes: sent as u64,
+                received_bytes: 0,
+            };
+        }
+        return ProtocolResult::Fail {
+            reason: format!("no-reply: {err}"),
+            sent_bytes: sent as u64,
+            received_bytes: 0,
+        };
+    }
+
+    ProtocolResult::Pass {
+        sent_bytes: sent as u64,
+        received_bytes: received as u64,
+    }
+}
+
+async fn send_icmp_echo_raw(
+    dest: Ipv4Addr,
+    id: u16,
+    seq: u16,
+    icmp_type: u8,
+    timeout: Duration,
+    verbose: bool,
+) -> ProtocolResult {
     if !has_icmp_capability() {
         return ProtocolResult::Error {
             reason: "permission: ICMP requires root or CAP_NET_RAW".into(),
@@ -103,7 +196,7 @@ async fn send_icmp_echo(
 
     let sa = to_sockaddr_in(dest);
     if verbose {
-        eprintln!("[v] icmp sending type={} seq={}", icmp_type, seq);
+        eprintln!("[v] icmp raw sending type={} seq={}", icmp_type, seq);
     }
     let sent = unsafe {
         libc::sendto(
@@ -127,7 +220,7 @@ async fn send_icmp_echo(
 
     if verbose {
         eprintln!(
-            "[v] icmp waiting for reply (timeout={}ms)",
+            "[v] icmp raw waiting for reply (timeout={}ms)",
             timeout.as_millis()
         );
     }
