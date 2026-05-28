@@ -265,63 +265,128 @@ pub async fn run_client(
                         })
                         .await?;
 
-                    let ctx = TestContext {
-                        direction: dir,
-                        transport,
-                        port,
-                        target_addr,
-                        timeout: Duration::from_millis(config.timeout_ms),
-                    };
+                    let quick =
+                        tokio::time::timeout(Duration::from_millis(500), channel.recv()).await;
 
-                    trace!(
-                        "test {} {}/{} port={} {}",
-                        test_name,
-                        transport_str,
-                        port,
-                        port,
-                        dir.as_str()
-                    );
-
-                    let result = match tokio::time::timeout(
-                        Duration::from_millis(config.timeout_ms + 2000),
-                        proto.run(ctx),
-                    )
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(_) => ProtocolResult::Fail {
-                            reason: "timeout (test took too long)".into(),
-                            sent_bytes: 0,
-                            received_bytes: 0,
-                        },
-                    };
-
-                    match &result {
-                        ProtocolResult::Pass { .. } => passed += 1,
-                        ProtocolResult::Fail { .. } => failed += 1,
-                        ProtocolResult::Error { .. } => errors += 1,
-                    }
-
-                    debug!("orchestrator waiting for report {}", id);
-
-                    let server_error = match tokio::time::timeout(
-                        Duration::from_millis(config.timeout_ms),
-                        channel.recv(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(Message::Report { error, .. })) => error,
-                        Ok(Ok(_)) => {
-                            error!("server: unexpected message (skipping)");
-                            None
+                    let (result, server_error) = match quick {
+                        Ok(Ok(Message::Report {
+                            error: Some(err),
+                            sent: None,
+                            received: None,
+                            ..
+                        })) => {
+                            if config.verbose >= 1 {
+                                debug!(
+                                    "skip test {} {}/{} {} (server: {err})",
+                                    test_name,
+                                    transport_str,
+                                    port,
+                                    dir.as_str()
+                                );
+                            }
+                            errors += 1;
+                            (
+                                ProtocolResult::Error {
+                                    reason: format!("server: {err}"),
+                                },
+                                Some(err),
+                            )
                         }
-                        Ok(Err(e)) => {
-                            error!("server: {e}");
-                            None
+                        Ok(Ok(Message::Report {
+                            error: Some(err),
+                            sent,
+                            received,
+                            ..
+                        })) => {
+                            let sb = sent.as_ref().map(|t| t.bytes).unwrap_or(0);
+                            let rb = received.as_ref().map(|t| t.bytes).unwrap_or(0);
+                            failed += 1;
+                            (
+                                ProtocolResult::Fail {
+                                    reason: err.clone(),
+                                    sent_bytes: sb,
+                                    received_bytes: rb,
+                                },
+                                Some(err),
+                            )
                         }
-                        Err(_) => {
-                            error!("server: timeout (no report within {}ms)", config.timeout_ms);
-                            None
+                        Ok(Ok(Message::Report { sent, received, .. })) => {
+                            let sb = sent.as_ref().map(|t| t.bytes).unwrap_or(0);
+                            let rb = received.as_ref().map(|t| t.bytes).unwrap_or(0);
+                            passed += 1;
+                            (
+                                ProtocolResult::Pass {
+                                    sent_bytes: sb,
+                                    received_bytes: rb,
+                                },
+                                None,
+                            )
+                        }
+                        _ => {
+                            let ctx = TestContext {
+                                direction: dir,
+                                transport,
+                                port,
+                                target_addr,
+                                timeout: Duration::from_millis(config.timeout_ms),
+                            };
+
+                            trace!(
+                                "test {} {}/{} port={} {}",
+                                test_name,
+                                transport_str,
+                                port,
+                                port,
+                                dir.as_str()
+                            );
+
+                            let r = match tokio::time::timeout(
+                                Duration::from_millis(config.timeout_ms + 2000),
+                                proto.run(ctx),
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => ProtocolResult::Fail {
+                                    reason: "timeout (test took too long)".into(),
+                                    sent_bytes: 0,
+                                    received_bytes: 0,
+                                },
+                            };
+
+                            match &r {
+                                ProtocolResult::Pass { .. } => passed += 1,
+                                ProtocolResult::Fail { .. } => failed += 1,
+                                ProtocolResult::Error { .. } => errors += 1,
+                            }
+
+                            debug!("orchestrator waiting for report {}", id);
+
+                            let se = match tokio::time::timeout(
+                                Duration::from_millis(config.timeout_ms),
+                                channel.recv(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(Message::Report { error, .. })) => error,
+                                Ok(Ok(_)) => {
+                                    error!("server: unexpected message (skipping)");
+                                    None
+                                }
+                                Ok(Err(e)) => {
+                                    error!("server: {e}");
+                                    None
+                                }
+                                Err(_) => {
+                                    error!(
+                                        "server: timeout (no report within {}ms)",
+                                        config.timeout_ms
+                                    );
+                                    None
+                                }
+                            };
+
+                            (r, se)
                         }
                     };
 
@@ -628,7 +693,7 @@ fn print_json_export(merged: &[MergedEntry], passed: u32, failed: u32, errors: u
 
     let output = serde_json::json!({
         "bimap": {
-            "version": "0.2.4",
+            "version": env!("CARGO_PKG_VERSION"),
             "mode": "client"
         },
         "summary": {
