@@ -22,7 +22,7 @@ hickory-proto     DNS protocol structures (RFC-compliant)
 ```
 
 DNS uses `hickory-proto` for RFC-compliant wire format.
-IP, TCP, UDP, ICMP headers are manual C-style structs in `src/packet/` (planned migration to `pnet_packet`).
+IP, TCP, UDP, ICMP headers use `pnet_packet` crate (migrated from manual C-style structs in 0.2.0).
 
 ## Binary layout
 
@@ -42,14 +42,12 @@ src/
     tls_test.rs        TLS handshake + 1kb data transfer (L7, via rustls)
     dns.rs             DNS query/response via TCP & UDP (L7)
   packet/
-    mod.rs             Packet trait, checksum helpers
-    ip.rs              IP header struct (manual C-style)
-    tcp.rs             TCP header struct (manual C-style)
-    udp.rs             UDP header struct (manual C-style)
-    icmp.rs            ICMP header struct (manual C-style)
+    mod.rs             ICMP type constants + type_name helper
+    icmp.rs            ICMP type table (ALL_ICMP_TYPES), type_name()
+    (IP, TCP, UDP headers removed in 0.2.0 — pnet_packet handles these)
 ```
 
-IP, TCP, UDP, ICMP headers are manual C-style structs in `src/packet/` (planned migration to `pnet_packet`).
+IP, TCP, UDP, ICMP headers use `pnet_packet` crate (migrated from manual C-style structs in 0.2.0).
 DNS uses `hickory-proto` for RFC-compliant wire format.
 
 ## Control protocol

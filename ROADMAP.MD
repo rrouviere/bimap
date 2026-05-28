@@ -59,7 +59,7 @@ Fix: eliminate 300+ LOC of manual wire-format parsing. Reliability increase.
 |------|-------|----------|-------------|--------|
 | 5a | QA | `qa/udp-retry` | Failing test proving UDP target race | ✅ DONE — 8/10 iterations fail without fix |
 | 5b | Dev | `fix/udp-retry` | Add retry loop to UDP target recv_from | ✅ DONE — commit bd72f64 |
-| 5c | User persona | — | Final real-world validation after fix | ⏳ IN PROGRESS |
+| 5c | User persona | — | Final real-world validation after fix | ✅ DONE — FINAL APPROVAL. 45/45 test_all, 20/20 DNS UDP stress |
 
 ---
 
@@ -71,5 +71,6 @@ Fix: eliminate 300+ LOC of manual wire-format parsing. Reliability increase.
 | 1kb broken | ✅ FIXED (4bdcaa6) | UDP double-send eliminated |
 | Manual packet headers | ✅ FIXED (95ade15) | pnet_packet migration, -494 LOC |
 | No CI pipeline | ✅ FIXED (f80d535) | GitHub Actions on push/PR |
-| Doc inconsistency | ✅ FIXED | AGENTS.md, ARCHI.MD synced to 0.2.0+ |
-| UDP target retry loop | OPEN | No retry on udp target recv_from → flaky under load |
+| Doc inconsistency | ✅ FIXED | AGENTS.md, ARCHI.MD synced to 0.2.3 |
+| UDP target retry loop | ✅ FIXED (93acd87) | 5-attempt retry with 1000ms per attempt |
+| 1kb UDP flaky (specific ports) | OPEN | ~20% timeout on some port ranges. Rare, low priority |

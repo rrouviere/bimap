@@ -1,5 +1,10 @@
 # Bimap — AI Agent Instructions
 
+## Current state
+
+**Version**: 0.2.3 — All known bugs fixed. Ship-ready.
+**Tests**: 40 total (23 unit + 4 integration + 11 e2e + 2 fault).
+
 ## Build & Test
 
 ```bash
