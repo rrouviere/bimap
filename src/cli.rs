@@ -57,8 +57,8 @@ pub enum Command {
         #[arg(long)]
         bidir: bool,
 
-        /// Per-test timeout in milliseconds (default: 5000)
-        #[arg(long, default_value_t = 5000)]
+        /// Per-test timeout in milliseconds (default: 500)
+        #[arg(long, default_value_t = 500)]
         timeout: u64,
 
         /// Trust this SHA-256 certificate fingerprint, skip interactive prompt
@@ -73,8 +73,8 @@ pub enum Command {
         #[arg(long)]
         json_export: bool,
 
-        /// Number of tests to run in parallel (default: 10, 1 = sequential)
-        #[arg(long, default_value_t = 10)]
+        /// Number of tests to run in parallel (default: 100, 1 = sequential)
+        #[arg(long, default_value_t = 100)]
         parallel: usize,
 
         /// Verbose debug output. -v = debug, -vv = trace

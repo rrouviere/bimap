@@ -74,6 +74,7 @@ async fn configure_ack_roundtrip() {
         }],
         bidir: false,
         target: None,
+        timeout_ms: 500,
     };
     client.send(&configure).await.expect("send configure");
 
@@ -107,7 +108,7 @@ async fn full_open_test_loopback() {
     // Start server in background, give it time to be ready
     let registry = build_registry();
     let server_handle =
-        tokio::spawn(async move { orchestrator::run_server(server, &registry, 5000).await });
+        tokio::spawn(async move { orchestrator::run_server(server, &registry).await });
 
     // Small delay to let server start processing
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -160,6 +161,7 @@ async fn server_rejects_unknown_protocol() {
             }],
             bidir: false,
             target: None,
+            timeout_ms: 2000,
         })
         .await
         .expect("send configure");
@@ -167,7 +169,7 @@ async fn server_rejects_unknown_protocol() {
     // Server should process the configure + test without hanging
     let registry = build_registry();
     let server_handle =
-        tokio::spawn(async move { orchestrator::run_server(server, &registry, 5000).await });
+        tokio::spawn(async move { orchestrator::run_server(server, &registry).await });
 
     // Give server time to process configure, ack, process test, send report
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;

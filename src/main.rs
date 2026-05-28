@@ -4,7 +4,7 @@ use bimap::output;
 use std::net::IpAddr;
 use std::net::ToSocketAddrs;
 use std::process;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 fn main() {
     let command = match parse() {
@@ -94,7 +94,7 @@ fn main() {
                         continue;
                     }
 
-                    match orchestrator::run_server(channel, &registry, 5000).await {
+                    match orchestrator::run_server(channel, &registry).await {
                         Ok(summary) => {
                             info!(
                                 "done: {} passed, {} failed, {} errors",
@@ -232,7 +232,7 @@ fn main() {
                     }
                 };
 
-                info!("server fingerprint: {hello}");
+                debug!("server fingerprint: {hello}");
 
                 if let Some(ref expected) = fingerprint {
                     if hello != *expected

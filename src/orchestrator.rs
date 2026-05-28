@@ -3,7 +3,7 @@ use futures::StreamExt;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
-use tracing::{debug, error, trace};
+use tracing::{debug, trace};
 
 use crate::control::msg::{Message, PortRangeSpec, TestSummary, TransferReport};
 use crate::control::ControlChannel;
@@ -66,10 +66,11 @@ pub struct MergedEntry {
 pub async fn run_server(
     mut channel: ControlChannel,
     registry: &TestRegistry,
-    timeout_ms: u64,
 ) -> Result<TestSummary, String> {
-    let test_bind_ip = match channel.recv().await? {
-        Message::Configure { target, .. } => {
+    let (timeout_ms, test_bind_ip) = match channel.recv().await? {
+        Message::Configure {
+            target, timeout_ms, ..
+        } => {
             let bind_ip: Option<IpAddr> = target.as_ref().and_then(|t| t.parse().ok());
             channel
                 .send(&Message::Ack {
@@ -77,7 +78,7 @@ pub async fn run_server(
                     message: None,
                 })
                 .await?;
-            bind_ip
+            (timeout_ms, bind_ip)
         }
         _ => return Err("expected Configure message".into()),
     };
@@ -293,15 +294,15 @@ async fn execute_batch(
             {
                 Ok(Ok(Message::Report { error, .. })) => error,
                 Ok(Ok(_)) => {
-                    error!("server: unexpected message");
+                    debug!("server: unexpected message");
                     None
                 }
                 Ok(Err(e)) => {
-                    error!("server: {e}");
+                    debug!("server: {e}");
                     None
                 }
                 Err(_) => {
-                    error!("server: timeout (no report within {}ms)", config.timeout_ms);
+                    debug!("server: timeout (no report within {}ms)", config.timeout_ms);
                     None
                 }
             };
@@ -309,7 +310,7 @@ async fn execute_batch(
         if let Some(ref err_msg) = server_error {
             if let Some(result) = pending.get(&entry.id) {
                 if !matches!(result, ProtocolResult::Pass { .. }) {
-                    error!("server: {err_msg}");
+                    debug!("server: {err_msg}");
                 }
             }
         }
@@ -378,6 +379,7 @@ pub async fn run_client(
             port_ranges: port_range_specs,
             bidir: config.bidir,
             target: Some(config.target_addr.to_string()),
+            timeout_ms: config.timeout_ms,
         })
         .await?;
 
@@ -542,15 +544,15 @@ pub async fn run_client(
                                 {
                                     Ok(Ok(Message::Report { error, .. })) => error,
                                     Ok(Ok(_)) => {
-                                        error!("server: unexpected message (skipping)");
+                                        debug!("server: unexpected message (skipping)");
                                         None
                                     }
                                     Ok(Err(e)) => {
-                                        error!("server: {e}");
+                                        debug!("server: {e}");
                                         None
                                     }
                                     Err(_) => {
-                                        error!(
+                                        debug!(
                                             "server: timeout (no report within {}ms)",
                                             config.timeout_ms
                                         );
@@ -564,7 +566,7 @@ pub async fn run_client(
 
                         if let Some(ref err_msg) = server_error {
                             if !matches!(result, ProtocolResult::Pass { .. }) {
-                                error!("server: {err_msg}");
+                                debug!("server: {err_msg}");
                             }
                         }
 
@@ -707,9 +709,10 @@ pub async fn run_client(
         errors,
     };
 
-    match channel.recv().await? {
-        Message::Bye { .. } => Ok(summary),
-        _ => Err("expected Bye".into()),
+    match channel.recv().await {
+        Ok(Message::Bye { .. }) => Ok(summary),
+        Ok(other) => Err(format!("expected Bye, got {other:?}")),
+        Err(e) => Err(format!("recv Bye: {e}")),
     }
 }
 

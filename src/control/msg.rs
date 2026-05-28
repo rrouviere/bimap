@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+fn default_timeout() -> u64 {
+    5000
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
@@ -13,6 +17,8 @@ pub enum Message {
         bidir: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         target: Option<String>,
+        #[serde(default = "default_timeout")]
+        timeout_ms: u64,
     },
     Ack {
         ok: bool,
@@ -94,6 +100,7 @@ mod tests {
             }],
             bidir: false,
             target: None,
+            timeout_ms: 500,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -103,11 +110,13 @@ mod tests {
                 port_ranges,
                 bidir,
                 target,
+                timeout_ms,
             } => {
                 assert_eq!(tests.len(), 2);
                 assert_eq!(port_ranges[0].transport, "tcp");
                 assert!(!bidir);
                 assert!(target.is_none());
+                assert_eq!(timeout_ms, 500);
             }
             _ => panic!("wrong variant"),
         }
