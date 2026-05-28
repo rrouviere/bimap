@@ -27,10 +27,24 @@ All P1–P7 complete. Original phases shipped but tests are failing in real-worl
 
 ### Iteration 2 — pnet_packet migration (version 0.2.0)
 
+| Step | Agent | Worktree | Deliverable | Status |
+|------|-------|----------|-------------|--------|
+| 2a | Dev | `feat/pnet-packet` | Replace manual headers with pnet_packet | ✅ DONE — commit 95ade15, -494 LOC |
+| 2b | User persona | — | Validate real-world behavior after migration | ✅ DONE — all pass. Pre-existing UDP flakiness found (no retry loop on targets), not regression |
+
 Replace `src/packet/` manual unsafe headers with `pnet_packet` crate.
 Fix: eliminate 300+ LOC of manual wire-format parsing. Reliability increase.
 
 ### Iteration 3 — CI pipeline (version 0.2.1)
+
+| Step | Agent | Worktree | Deliverable | Status |
+|------|-------|----------|-------------|--------|
+| 3a | Dev | `feat/ci` | GitHub Actions — build + test + lint on push/PR | ⏳ IN PROGRESS |
+| 3b | User persona | — | Validate CI runs clean | ⏳ PENDING |
+
+---
+
+## Known issues (remaining)
 
 GitHub Actions: build + test + lint on push/PR. Docker build CI step.
 
@@ -47,6 +61,7 @@ Only exit loop when user persona reports 100% pass on real instances.
 |-------|--------|-------|
 | icmp-ping broken | ✅ FIXED (91875d9) | Checksum included payload per RFC 792 |
 | 1kb broken | ✅ FIXED (4bdcaa6) | UDP double-send eliminated |
-| Manual packet headers | OPEN (Iter 2) | unsafe transmute decode in `src/packet/*` |
+| Manual packet headers | ✅ FIXED (95ade15) | pnet_packet migration, -494 LOC |
 | No CI pipeline | OPEN (Iter 3) | No GitHub Actions |
-| Doc inconsistency | OPEN (Iter 1) | AGENTS.md vs ARCHI.MD vs Cargo.toml mismatch |
+| Doc inconsistency | ✅ FIXED | AGENTS.md, ARCHI.MD synced to 0.2.0 |
+| UDP target retry loop | OPEN | No retry on udp target recv_from → flaky under load |
