@@ -1,5 +1,5 @@
 use crate::orchestrator::ProtocolResult;
-use crate::packet::icmp::{type_name, ALL_ICMP_TYPES, ICMP_TYPE_ECHO_REPLY};
+use crate::packet::icmp::{ALL_ICMP_TYPES, ICMP_TYPE_ECHO_REPLY};
 use crate::test::{Direction, Layer, TestContext, TestProtocol, Transport};
 use async_trait::async_trait;
 use std::net::Ipv4Addr;
@@ -131,91 +131,74 @@ async fn send_icmp_echo(
             timeout.as_millis()
         );
     }
-    let mut recv_buf = [0u8; 1500];
-    let received = unsafe {
-        libc::recvfrom(
-            fd,
-            recv_buf.as_mut_ptr() as *mut libc::c_void,
-            recv_buf.len(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-
-    unsafe {
-        libc::close(fd);
-    }
-
-    if received < 0 {
-        let err = std::io::Error::last_os_error();
-        if err.kind() == std::io::ErrorKind::WouldBlock
-            || err.kind() == std::io::ErrorKind::TimedOut
-        {
+    let start = std::time::Instant::now();
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            unsafe { libc::close(fd) };
             return ProtocolResult::Fail {
                 reason: "timeout".into(),
                 sent_bytes: sent as u64,
                 received_bytes: 0,
             };
         }
-        return ProtocolResult::Fail {
-            reason: format!("no-reply: {err}"),
-            sent_bytes: sent as u64,
-            received_bytes: 0,
-        };
-    }
+        let remaining = timeout - elapsed;
 
-    let n = received as usize;
-    let icmp_offset = match ip_header_len(&recv_buf[..n]) {
-        Some(offset) => offset,
-        None => {
+        if let Err(e) = unsafe { set_socket_timeout(fd, remaining) } {
+            unsafe { libc::close(fd) };
+            return ProtocolResult::Error { reason: e };
+        }
+
+        let mut recv_buf = [0u8; 1500];
+        let received = unsafe {
+            libc::recvfrom(
+                fd,
+                recv_buf.as_mut_ptr() as *mut libc::c_void,
+                recv_buf.len(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+
+        if received < 0 {
+            let err = std::io::Error::last_os_error();
+            unsafe { libc::close(fd) };
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut
+            {
+                return ProtocolResult::Fail {
+                    reason: "timeout".into(),
+                    sent_bytes: sent as u64,
+                    received_bytes: 0,
+                };
+            }
             return ProtocolResult::Fail {
-                reason: "bad IP header".into(),
+                reason: format!("no-reply: {err}"),
+                sent_bytes: sent as u64,
+                received_bytes: 0,
+            };
+        }
+
+        let n = received as usize;
+        let icmp_offset = match ip_header_len(&recv_buf[..n]) {
+            Some(offset) => offset,
+            None => continue,
+        };
+
+        if icmp_offset + 8 > n {
+            continue;
+        }
+
+        let reply_type = recv_buf[icmp_offset];
+        let reply_id = u16::from_be_bytes([recv_buf[icmp_offset + 4], recv_buf[icmp_offset + 5]]);
+
+        if reply_type == ICMP_TYPE_ECHO_REPLY && reply_id == id {
+            unsafe { libc::close(fd) };
+            return ProtocolResult::Pass {
                 sent_bytes: sent as u64,
                 received_bytes: n as u64,
             };
-        }
-    };
-
-    if icmp_offset + 8 > n {
-        return ProtocolResult::Fail {
-            reason: "short ICMP reply".into(),
-            sent_bytes: sent as u64,
-            received_bytes: n as u64,
-        };
-    }
-
-    let icmp_packet = match pnet_packet::icmp::IcmpPacket::new(&recv_buf[icmp_offset..n]) {
-        Some(p) => p,
-        None => {
-            return ProtocolResult::Fail {
-                reason: "bad ICMP header".into(),
-                sent_bytes: sent as u64,
-                received_bytes: n as u64,
-            };
-        }
-    };
-
-    let reply_id = u16::from_be_bytes([recv_buf[icmp_offset + 4], recv_buf[icmp_offset + 5]]);
-    if icmp_packet.get_icmp_type().0 == ICMP_TYPE_ECHO_REPLY && reply_id == id {
-        ProtocolResult::Pass {
-            sent_bytes: sent as u64,
-            received_bytes: n as u64,
-        }
-    } else if icmp_packet.get_icmp_type().0 == ICMP_TYPE_ECHO_REPLY {
-        ProtocolResult::Fail {
-            reason: format!("unexpected ICMP identifier: {}, expected {}", reply_id, id),
-            sent_bytes: sent as u64,
-            received_bytes: n as u64,
-        }
-    } else {
-        ProtocolResult::Fail {
-            reason: format!(
-                "unexpected ICMP type: {}",
-                type_name(icmp_packet.get_icmp_type().0)
-            ),
-            sent_bytes: sent as u64,
-            received_bytes: n as u64,
         }
     }
 }
