@@ -121,9 +121,23 @@ async fn dns_tcp_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
     let framed_len = framed.len() as u64;
 
     match tokio::time::timeout(timeout, stream.write_all(&framed)).await {
-        Ok(Ok(())) => {
-            let _ = tokio::time::timeout(timeout, stream.flush()).await;
-        }
+        Ok(Ok(())) => match tokio::time::timeout(timeout, stream.flush()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                return ProtocolResult::Fail {
+                    reason: format!("flush: {e}"),
+                    sent_bytes: framed_len,
+                    received_bytes: 0,
+                };
+            }
+            Err(_) => {
+                return ProtocolResult::Fail {
+                    reason: "timeout".into(),
+                    sent_bytes: framed_len,
+                    received_bytes: 0,
+                };
+            }
+        },
         Ok(Err(e)) => {
             return ProtocolResult::Fail {
                 reason: format!("write: {e}"),

@@ -119,7 +119,9 @@ fn main() {
                     eprintln!("bimap: at least one --test is required");
                     eprintln!("available tests:");
                     for name in names {
-                        let proto = registry.find(name).unwrap();
+                        let Some(proto) = registry.find(name) else {
+                            continue;
+                        };
                         let transports: Vec<&str> =
                             proto.transports().iter().map(|t| t.as_str()).collect();
                         eprintln!(
