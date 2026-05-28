@@ -237,53 +237,54 @@ async fn udp_open_target(port: u16, timeout: std::time::Duration) -> ProtocolRes
     };
 
     let mut buf = [0u8; 1];
-    let (n, src) = match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("recv: {e}"),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    };
+    let mut last_err = String::new();
+    for _ in 0..5 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            socket.recv_from(&mut buf),
+        )
+        .await
+        {
+            Ok(Ok((n, src))) => {
+                if n != 1 {
+                    return ProtocolResult::Fail {
+                        reason: format!("short recv: {n} bytes"),
+                        sent_bytes: 0,
+                        received_bytes: 0,
+                    };
+                }
 
-    if n != 1 {
-        return ProtocolResult::Fail {
-            reason: format!("short recv: {n} bytes"),
-            sent_bytes: 0,
-            received_bytes: 0,
-        };
+                match tokio::time::timeout(timeout, socket.send_to(&buf, src)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        return ProtocolResult::Fail {
+                            reason: format!("send: {e}"),
+                            sent_bytes: 0,
+                            received_bytes: 1,
+                        };
+                    }
+                    Err(_) => {
+                        return ProtocolResult::Fail {
+                            reason: "send timeout".into(),
+                            sent_bytes: 0,
+                            received_bytes: 1,
+                        };
+                    }
+                }
+
+                return ProtocolResult::Pass {
+                    sent_bytes: 1,
+                    received_bytes: 1,
+                };
+            }
+            Ok(Err(e)) => last_err = format!("recv: {e}"),
+            Err(_) => last_err = "recv timeout".into(),
+        }
     }
-
-    match tokio::time::timeout(timeout, socket.send_to(&buf, src)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("send: {e}"),
-                sent_bytes: 0,
-                received_bytes: 1,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "send timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 1,
-            };
-        }
-    }
-
-    ProtocolResult::Pass {
-        sent_bytes: 1,
-        received_bytes: 1,
+    ProtocolResult::Fail {
+        reason: last_err,
+        sent_bytes: 0,
+        received_bytes: 0,
     }
 }
 
@@ -578,53 +579,54 @@ async fn udp_1kb_target(port: u16, timeout: std::time::Duration) -> ProtocolResu
     };
 
     let mut buf = vec![0u8; KB];
-    let (n, src) = match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("recv: {e}"),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    };
+    let mut last_err = String::new();
+    for _ in 0..5 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            socket.recv_from(&mut buf),
+        )
+        .await
+        {
+            Ok(Ok((n, src))) => {
+                if n != KB {
+                    return ProtocolResult::Fail {
+                        reason: format!("recv len: {n} != {KB}"),
+                        sent_bytes: 0,
+                        received_bytes: n as u64,
+                    };
+                }
 
-    if n != KB {
-        return ProtocolResult::Fail {
-            reason: format!("recv len: {n} != {KB}"),
-            sent_bytes: 0,
-            received_bytes: n as u64,
-        };
+                match tokio::time::timeout(timeout, socket.send_to(&buf[..n], src)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        return ProtocolResult::Fail {
+                            reason: format!("send: {e}"),
+                            sent_bytes: 0,
+                            received_bytes: n as u64,
+                        };
+                    }
+                    Err(_) => {
+                        return ProtocolResult::Fail {
+                            reason: "send timeout".into(),
+                            sent_bytes: 0,
+                            received_bytes: n as u64,
+                        };
+                    }
+                }
+
+                return ProtocolResult::Pass {
+                    sent_bytes: KB as u64,
+                    received_bytes: KB as u64,
+                };
+            }
+            Ok(Err(e)) => last_err = format!("recv: {e}"),
+            Err(_) => last_err = "recv timeout".into(),
+        }
     }
-
-    match tokio::time::timeout(timeout, socket.send_to(&buf[..n], src)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("send: {e}"),
-                sent_bytes: 0,
-                received_bytes: n as u64,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "send timeout".into(),
-                sent_bytes: 0,
-                received_bytes: n as u64,
-            };
-        }
-    }
-
-    ProtocolResult::Pass {
-        sent_bytes: KB as u64,
-        received_bytes: KB as u64,
+    ProtocolResult::Fail {
+        reason: last_err,
+        sent_bytes: 0,
+        received_bytes: 0,
     }
 }
 

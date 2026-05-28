@@ -216,7 +216,7 @@ async fn dns_tcp_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
     }
 }
 
-async fn dns_udp_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
+async fn dns_udp_target(port: u16, _timeout: std::time::Duration) -> ProtocolResult {
     let bind_addr = format!("0.0.0.0:{port}");
     let socket = match UdpSocket::bind(&bind_addr).await {
         Ok(s) => s,
@@ -228,57 +228,58 @@ async fn dns_udp_target(port: u16, timeout: std::time::Duration) -> ProtocolResu
     };
 
     let mut buf = [0u8; 1500];
-    let (n, addr) = match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
-        Ok(Ok(result)) => result,
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("recv: {e}"),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    };
+    let mut last_err = String::new();
+    for _ in 0..5 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            socket.recv_from(&mut buf),
+        )
+        .await
+        {
+            Ok(Ok((n, addr))) => {
+                let query = match dns::parse_dns_message(&buf[..n]) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        return ProtocolResult::Fail {
+                            reason: format!("dns-malformed: {e}"),
+                            sent_bytes: 0,
+                            received_bytes: n as u64,
+                        };
+                    }
+                };
 
-    let query = match dns::parse_dns_message(&buf[..n]) {
-        Ok(q) => q,
-        Err(e) => {
-            return ProtocolResult::Fail {
-                reason: format!("dns-malformed: {e}"),
-                sent_bytes: 0,
-                received_bytes: n as u64,
-            };
+                let response_bytes = match dns::build_dns_response(&query) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return ProtocolResult::Error {
+                            reason: format!("response: {e}"),
+                        };
+                    }
+                };
+
+                let sent_len = response_bytes.len() as u64;
+
+                if let Err(e) = socket.send_to(&response_bytes, addr).await {
+                    return ProtocolResult::Fail {
+                        reason: format!("send response: {e}"),
+                        sent_bytes: sent_len,
+                        received_bytes: n as u64,
+                    };
+                }
+
+                return ProtocolResult::Pass {
+                    sent_bytes: sent_len,
+                    received_bytes: n as u64,
+                };
+            }
+            Ok(Err(e)) => last_err = format!("recv: {e}"),
+            Err(_) => last_err = "recv timeout".into(),
         }
-    };
-
-    let response_bytes = match dns::build_dns_response(&query) {
-        Ok(b) => b,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("response: {e}"),
-            };
-        }
-    };
-
-    let sent_len = response_bytes.len() as u64;
-
-    if let Err(e) = socket.send_to(&response_bytes, addr).await {
-        return ProtocolResult::Fail {
-            reason: format!("send response: {e}"),
-            sent_bytes: sent_len,
-            received_bytes: n as u64,
-        };
     }
-
-    ProtocolResult::Pass {
-        sent_bytes: sent_len,
-        received_bytes: n as u64,
+    ProtocolResult::Fail {
+        reason: last_err,
+        sent_bytes: 0,
+        received_bytes: 0,
     }
 }
 
