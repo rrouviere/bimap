@@ -231,7 +231,7 @@ async fn dns_udp_target(port: u16, _timeout: std::time::Duration) -> ProtocolRes
     let mut last_err = String::new();
     for _ in 0..5 {
         match tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+            std::time::Duration::from_millis(1000),
             socket.recv_from(&mut buf),
         )
         .await

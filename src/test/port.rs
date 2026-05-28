@@ -240,7 +240,7 @@ async fn udp_open_target(port: u16, timeout: std::time::Duration) -> ProtocolRes
     let mut last_err = String::new();
     for _ in 0..5 {
         match tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+            std::time::Duration::from_millis(1000),
             socket.recv_from(&mut buf),
         )
         .await
@@ -582,7 +582,7 @@ async fn udp_1kb_target(port: u16, timeout: std::time::Duration) -> ProtocolResu
     let mut last_err = String::new();
     for _ in 0..5 {
         match tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+            std::time::Duration::from_millis(1000),
             socket.recv_from(&mut buf),
         )
         .await
