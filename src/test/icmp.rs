@@ -3,7 +3,9 @@ use crate::packet::icmp::{ALL_ICMP_TYPES, ICMP_TYPE_ECHO_REPLY};
 use crate::test::{Direction, Layer, TestContext, TestProtocol, Transport};
 use async_trait::async_trait;
 use std::net::Ipv4Addr;
+use std::process::Stdio;
 use std::time::Duration;
+use tokio::process::Command;
 
 fn has_icmp_capability() -> bool {
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
@@ -329,7 +331,40 @@ impl TestProtocol for IcmpPingTest {
             }
         };
 
-        send_icmp_echo(dest, 0x42, 1, 8, ctx.timeout, ctx.verbose).await
+        if ctx.verbose {
+            eprintln!(
+                "[v] icmp-ping spawning ping -c 1 -n -W {} {dest}",
+                ctx.timeout.as_secs()
+            );
+        }
+
+        let timeout_secs = ctx.timeout.as_secs().max(1);
+        let output = Command::new("ping")
+            .arg("-c")
+            .arg("1")
+            .arg("-n")
+            .arg("-W")
+            .arg(timeout_secs.to_string())
+            .arg(dest.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+
+        match output {
+            Ok(out) if out.status.success() => ProtocolResult::Pass {
+                sent_bytes: 13,
+                received_bytes: 13,
+            },
+            Ok(out) => ProtocolResult::Fail {
+                reason: format!("ping exit={}", out.status.code().unwrap_or(-1)),
+                sent_bytes: 13,
+                received_bytes: 0,
+            },
+            Err(e) => ProtocolResult::Error {
+                reason: format!("ping: {e}"),
+            },
+        }
     }
 }
 
