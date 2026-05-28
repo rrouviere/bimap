@@ -49,7 +49,17 @@ Fix: eliminate 300+ LOC of manual wire-format parsing. Reliability increase.
 | Step | Agent | Worktree | Deliverable | Status |
 |------|-------|----------|-------------|--------|
 | 4a | Dev | `fix/audit-issues` | Convention compliance: unwrap, silent discards fixed | ✅ DONE — commit 8d29db3 |
-| 4b | User persona | — | Final real-world validation | ⏳ IN PROGRESS |
+| 4b | User persona | — | Final real-world validation | ❌ FAIL — DNS UDP timing race detected. New iteration needed |
+
+---
+
+### Iteration 5 — UDP target retry loop (version 0.2.3)
+
+| Step | Agent | Worktree | Deliverable | Status |
+|------|-------|----------|-------------|--------|
+| 5a | QA | `qa/udp-retry` | Failing test proving UDP target race (DNS UDP, open UDP) | ⏳ PENDING |
+| 5b | Dev | `fix/udp-retry` | Add retry loop to UDP target recv_from | ⏳ PENDING |
+| 5c | User persona | — | Final real-world validation after fix | ⏳ PENDING |
 
 ---
 
