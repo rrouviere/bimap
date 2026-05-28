@@ -39,29 +39,27 @@ Fix: eliminate 300+ LOC of manual wire-format parsing. Reliability increase.
 
 | Step | Agent | Worktree | Deliverable | Status |
 |------|-------|----------|-------------|--------|
-| 3a | Dev | `feat/ci` | GitHub Actions — build + test + lint on push/PR | ⏳ IN PROGRESS |
-| 3b | User persona | — | Validate CI runs clean | ⏳ PENDING |
+| 3a | Dev | `feat/ci` | GitHub Actions — build + test + lint on push/PR | ✅ DONE — commit f80d535 |
+| 3b | User persona | — | Validate CI runs clean | ✅ DONE — all tests pass, pre-commit hook fires |
 
 ---
 
-## Known issues (remaining)
+### Iteration 4 — Final audit & polish (version 0.2.2)
 
-GitHub Actions: build + test + lint on push/PR. Docker build CI step.
-
-### Loop rule
-
-After each user-persona validation, if any test fails → go back to Iteration start.
-Only exit loop when user persona reports 100% pass on real instances.
+| Step | Agent | Worktree | Deliverable | Status |
+|------|-------|----------|-------------|--------|
+| 4a | Audit | `master` | Convention compliance scan (no unwrap, no silent discard, no panic) | ⏳ IN PROGRESS |
+| 4b | User persona | — | Final real-world validation | ⏳ PENDING |
 
 ---
 
-## Current known issues (informed by user)
+## Known issues
 
 | Issue | Status | Notes |
 |-------|--------|-------|
 | icmp-ping broken | ✅ FIXED (91875d9) | Checksum included payload per RFC 792 |
 | 1kb broken | ✅ FIXED (4bdcaa6) | UDP double-send eliminated |
 | Manual packet headers | ✅ FIXED (95ade15) | pnet_packet migration, -494 LOC |
-| No CI pipeline | OPEN (Iter 3) | No GitHub Actions |
-| Doc inconsistency | ✅ FIXED | AGENTS.md, ARCHI.MD synced to 0.2.0 |
+| No CI pipeline | ✅ FIXED (f80d535) | GitHub Actions on push/PR |
+| Doc inconsistency | ✅ FIXED | AGENTS.md, ARCHI.MD synced to 0.2.0+ |
 | UDP target retry loop | OPEN | No retry on udp target recv_from → flaky under load |

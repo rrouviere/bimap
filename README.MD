@@ -38,3 +38,4 @@ Bimap is a single binary that can run in two modes:
 - Server
 
 Note that this does not imply a client-server architecture
+ 
