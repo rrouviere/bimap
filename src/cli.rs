@@ -37,7 +37,7 @@ pub enum Command {
         port: u16,
 
         /// Test to run (repeatable). Omit to list available tests
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", num_args = 0..)]
         test: Vec<String>,
 
         /// Port range to probe (repeatable)

@@ -59,12 +59,14 @@ fn server_prints_fingerprint() {
 }
 
 #[test]
-fn client_no_tests_is_config_error() {
+fn client_no_tests_lists_tests() {
     let output = Command::new(env!("CARGO_BIN_EXE_bimap"))
         .args(["client", "--server", "127.0.0.1", "--port-range", "tcp/1-1"])
         .output()
         .expect("run client");
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("available tests:"), "stdout: {stdout}");
 }
 
 #[test]

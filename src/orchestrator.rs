@@ -250,6 +250,22 @@ pub async fn run_client(
                         ProtocolResult::Error { .. } => errors += 1,
                     }
 
+                    if config.verbose {
+                        eprintln!("[v] orchestrator waiting for report {}", id);
+                    }
+
+                    // Read server's Report
+                    let server_error = match channel.recv().await? {
+                        Message::Report { error, .. } => error,
+                        _ => return Err("expected Report".into()),
+                    };
+
+                    if let Some(ref err_msg) = server_error {
+                        if !matches!(result, ProtocolResult::Pass { .. }) {
+                            eprintln!("  server: {err_msg}");
+                        }
+                    }
+
                     print_result(
                         id,
                         test_name,
@@ -258,17 +274,8 @@ pub async fn run_client(
                         dir,
                         &result,
                         config.json,
+                        server_error.as_deref(),
                     );
-
-                    if config.verbose {
-                        eprintln!("[v] orchestrator waiting for report {}", id);
-                    }
-
-                    // Read server's Report
-                    match channel.recv().await? {
-                        Message::Report { .. } => {}
-                        _ => return Err("expected Report".into()),
-                    }
 
                     id += 1;
                 }
@@ -344,6 +351,7 @@ fn protocol_result_to_report(id: u32, result: &ProtocolResult) -> Message {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_result(
     id: u32,
     protocol: &str,
@@ -352,6 +360,7 @@ fn print_result(
     direction: Direction,
     result: &ProtocolResult,
     json: bool,
+    server_error: Option<&str>,
 ) {
     if json {
         let (status, reason, tx, rx) = match result {
@@ -366,8 +375,11 @@ fn print_result(
             } => ("fail", reason.clone(), *sent_bytes, *received_bytes),
             ProtocolResult::Error { reason } => ("error", reason.clone(), 0u64, 0u64),
         };
+        let err_field = server_error
+            .map(|e| format!(r#","server_error":"{}""#, e))
+            .unwrap_or_default();
         println!(
-            r#"{{"id":{id},"protocol":"{protocol}","transport":"{transport}","port":{port},"direction":"{dir}","status":"{status}","reason":"{reason}","tx":{tx},"rx":{rx}}}"#,
+            r#"{{"id":{id},"protocol":"{protocol}","transport":"{transport}","port":{port},"direction":"{dir}","status":"{status}","reason":"{reason}","tx":{tx},"rx":{rx}{err_field}}}"#,
             dir = direction.as_str(),
         );
     } else {

@@ -116,22 +116,21 @@ fn main() {
                 if test.is_empty() {
                     let registry = build_registry();
                     let names = registry.names();
-                    eprintln!("bimap: at least one --test is required");
-                    eprintln!("available tests:");
+                    println!("available tests:");
                     for name in names {
                         let Some(proto) = registry.find(name) else {
                             continue;
                         };
                         let transports: Vec<&str> =
                             proto.transports().iter().map(|t| t.as_str()).collect();
-                        eprintln!(
+                        println!(
                             "  {:<12} layer={:?} transports={}",
                             name,
                             proto.layer(),
                             transports.join(",")
                         );
                     }
-                    return 2;
+                    return 0;
                 }
                 if port_range.is_empty() {
                     let registry = build_registry();
