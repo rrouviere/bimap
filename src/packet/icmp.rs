@@ -60,7 +60,7 @@ impl IcmpHeader {
             identifier: id,
             sequence: seq,
         };
-        header.checksum = header.compute_checksum();
+        header.checksum = header.compute_checksum(&[]);
         header
     }
 
@@ -90,10 +90,11 @@ impl IcmpHeader {
         })
     }
 
-    pub fn compute_checksum(&self) -> u16 {
+    pub fn compute_checksum(&self, payload: &[u8]) -> u16 {
         let mut header = self.clone();
         header.checksum = 0;
-        let encoded = header.encode();
+        let mut encoded = header.encode();
+        encoded.extend_from_slice(payload);
         internet_checksum(&encoded)
     }
 

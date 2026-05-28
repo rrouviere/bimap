@@ -83,10 +83,8 @@ async fn send_icmp_echo(
         identifier: id,
         sequence: seq,
     };
+    let csum = icmp.compute_checksum(payload);
     let mut packet = icmp.encode();
-    packet.extend_from_slice(payload);
-    let csum = icmp.compute_checksum();
-    packet = icmp.encode();
     packet[2] = (csum >> 8) as u8;
     packet[3] = (csum & 0xFF) as u8;
     packet.extend_from_slice(payload);
