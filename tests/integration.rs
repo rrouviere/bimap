@@ -122,7 +122,7 @@ async fn full_open_test_loopback() {
         target_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         json: false,
         json_export: false,
-        verbose: false,
+        verbose: 0,
     };
     let client_summary = orchestrator::run_client(client, &registry, &config)
         .await

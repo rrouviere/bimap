@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tracing::{debug, trace};
 
 pub struct DnsTest;
 
@@ -15,14 +16,8 @@ fn next_query_id() -> u16 {
     DNS_QUERY_ID.fetch_add(1, Ordering::SeqCst)
 }
 
-async fn dns_udp_initiator(
-    target: SocketAddr,
-    timeout: std::time::Duration,
-    verbose: bool,
-) -> ProtocolResult {
-    if verbose {
-        eprintln!("[v] dns binding udp port 0");
-    }
+async fn dns_udp_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
+    debug!("dns binding udp port 0");
     let socket = match UdpSocket::bind("0.0.0.0:0").await {
         Ok(s) => s,
         Err(e) => {
@@ -47,9 +42,7 @@ async fn dns_udp_initiator(
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
-        if verbose {
-            eprintln!("[v] dns sending query to {}:{}", target.ip(), target.port());
-        }
+        debug!("dns sending query to {}:{}", target.ip(), target.port());
         if let Err(e) = tokio::time::timeout(timeout, socket.send_to(&query_bytes, target)).await {
             last_err = format!("send timeout: {e}");
             continue;
@@ -60,12 +53,10 @@ async fn dns_udp_initiator(
         }
 
         let mut buf = [0u8; 1500];
-        if verbose {
-            eprintln!(
-                "[v] dns waiting for response (timeout={}ms)",
-                timeout.as_millis()
-            );
-        }
+        trace!(
+            "dns waiting for response (timeout={}ms)",
+            timeout.as_millis()
+        );
         match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
             Ok(Ok((n, _addr))) => match dns::parse_dns_message(&buf[..n]) {
                 Ok(response) => {
@@ -101,19 +92,9 @@ async fn dns_udp_initiator(
     }
 }
 
-async fn dns_tcp_initiator(
-    target: SocketAddr,
-    timeout: std::time::Duration,
-    verbose: bool,
-) -> ProtocolResult {
+async fn dns_tcp_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
     let mut stream = loop {
-        if verbose {
-            eprintln!(
-                "[v] dns tcp connecting to {}:{}",
-                target.ip(),
-                target.port()
-            );
-        }
+        debug!("dns tcp connecting to {}:{}", target.ip(), target.port());
         match tokio::time::timeout(timeout, TcpStream::connect(target)).await {
             Ok(Ok(s)) => break s,
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
@@ -147,9 +128,7 @@ async fn dns_tcp_initiator(
 
     let framed_len = framed.len() as u64;
 
-    if verbose {
-        eprintln!("[v] dns tcp sending query ({} bytes)", framed_len);
-    }
+    debug!("dns tcp sending query ({} bytes)", framed_len);
     match tokio::time::timeout(timeout, stream.write_all(&framed)).await {
         Ok(Ok(())) => match tokio::time::timeout(timeout, stream.flush()).await {
             Ok(Ok(())) => {}
@@ -185,9 +164,7 @@ async fn dns_tcp_initiator(
     }
 
     let mut len_buf = [0u8; 2];
-    if verbose {
-        eprintln!("[v] dns tcp waiting for length prefix");
-    }
+    debug!("dns tcp waiting for length prefix");
     match tokio::time::timeout(timeout, stream.read_exact(&mut len_buf)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
@@ -216,9 +193,7 @@ async fn dns_tcp_initiator(
     }
 
     let mut response_buf = vec![0u8; response_len];
-    if verbose {
-        eprintln!("[v] dns tcp waiting for {} bytes response", response_len);
-    }
+    trace!("dns tcp waiting for {} bytes response", response_len);
     match tokio::time::timeout(timeout, stream.read_exact(&mut response_buf)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
@@ -252,11 +227,9 @@ async fn dns_tcp_initiator(
     }
 }
 
-async fn dns_udp_target(port: u16, _timeout: std::time::Duration, verbose: bool) -> ProtocolResult {
+async fn dns_udp_target(port: u16, _timeout: std::time::Duration) -> ProtocolResult {
     let bind_addr = format!("0.0.0.0:{port}");
-    if verbose {
-        eprintln!("[v] dns binding udp port {}", port);
-    }
+    debug!("dns binding udp port {}", port);
     let socket = match UdpSocket::bind(&bind_addr).await {
         Ok(s) => s,
         Err(e) => {
@@ -269,9 +242,7 @@ async fn dns_udp_target(port: u16, _timeout: std::time::Duration, verbose: bool)
     let mut buf = [0u8; 1500];
     let mut last_err = String::new();
     for _ in 0..5 {
-        if verbose {
-            eprintln!("[v] dns waiting for response (timeout={}ms)", 1000u64);
-        }
+        trace!("dns waiting for response (timeout={}ms)", 1000u64);
         match tokio::time::timeout(
             std::time::Duration::from_millis(1000),
             socket.recv_from(&mut buf),
@@ -325,11 +296,9 @@ async fn dns_udp_target(port: u16, _timeout: std::time::Duration, verbose: bool)
     }
 }
 
-async fn dns_tcp_target(port: u16, timeout: std::time::Duration, verbose: bool) -> ProtocolResult {
+async fn dns_tcp_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
     let bind_addr = format!("0.0.0.0:{port}");
-    if verbose {
-        eprintln!("[v] dns binding udp port {}", port);
-    }
+    debug!("dns binding udp port {}", port);
     let listener = match TcpListener::bind(&bind_addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -339,9 +308,7 @@ async fn dns_tcp_target(port: u16, timeout: std::time::Duration, verbose: bool) 
         }
     };
 
-    if verbose {
-        eprintln!("[v] dns tcp waiting for connection on port {}", port);
-    }
+    debug!("dns tcp waiting for connection on port {}", port);
     let (mut stream, _) = match tokio::time::timeout(timeout, listener.accept()).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
@@ -361,9 +328,7 @@ async fn dns_tcp_target(port: u16, timeout: std::time::Duration, verbose: bool) 
     };
 
     let mut len_buf = [0u8; 2];
-    if verbose {
-        eprintln!("[v] dns tcp waiting for length prefix");
-    }
+    debug!("dns tcp waiting for length prefix");
     match tokio::time::timeout(timeout, stream.read_exact(&mut len_buf)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
@@ -391,9 +356,7 @@ async fn dns_tcp_target(port: u16, timeout: std::time::Duration, verbose: bool) 
         };
     }
     let mut query_buf = vec![0u8; query_len];
-    if verbose {
-        eprintln!("[v] dns tcp waiting for {} bytes query", query_len);
-    }
+    trace!("dns tcp waiting for {} bytes query", query_len);
     match tokio::time::timeout(timeout, stream.read_exact(&mut query_buf)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
@@ -438,9 +401,7 @@ async fn dns_tcp_target(port: u16, timeout: std::time::Duration, verbose: bool) 
     framed.extend_from_slice(&response_bytes);
     let framed_len = framed.len() as u64;
 
-    if verbose {
-        eprintln!("[v] dns tcp sending query ({} bytes)", framed_len);
-    }
+    debug!("dns tcp sending query ({} bytes)", framed_len);
     if let Err(e) = stream.write_all(&framed).await {
         return ProtocolResult::Fail {
             reason: format!("write: {e}"),
@@ -472,20 +433,12 @@ impl TestProtocol for DnsTest {
     async fn run(&self, ctx: TestContext) -> ProtocolResult {
         match ctx.transport {
             Transport::Tcp => match ctx.direction {
-                Direction::ClientToServer => {
-                    dns_tcp_initiator(ctx.target_addr, ctx.timeout, ctx.verbose).await
-                }
-                Direction::ServerToClient => {
-                    dns_tcp_target(ctx.port, ctx.timeout, ctx.verbose).await
-                }
+                Direction::ClientToServer => dns_tcp_initiator(ctx.target_addr, ctx.timeout).await,
+                Direction::ServerToClient => dns_tcp_target(ctx.port, ctx.timeout).await,
             },
             Transport::Udp => match ctx.direction {
-                Direction::ClientToServer => {
-                    dns_udp_initiator(ctx.target_addr, ctx.timeout, ctx.verbose).await
-                }
-                Direction::ServerToClient => {
-                    dns_udp_target(ctx.port, ctx.timeout, ctx.verbose).await
-                }
+                Direction::ClientToServer => dns_udp_initiator(ctx.target_addr, ctx.timeout).await,
+                Direction::ServerToClient => dns_udp_target(ctx.port, ctx.timeout).await,
             },
             Transport::Icmp => ProtocolResult::Error {
                 reason: "ICMP not supported by DNS test".into(),

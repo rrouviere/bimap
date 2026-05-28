@@ -1,8 +1,10 @@
 use bimap::cli::{parse, Command};
 use bimap::control::msg::Message;
+use bimap::output;
 use std::net::IpAddr;
 use std::net::ToSocketAddrs;
 use std::process;
+use tracing::{error, info};
 
 fn main() {
     let command = match parse() {
@@ -12,6 +14,13 @@ fn main() {
             process::exit(2);
         }
     };
+
+    let verbose = match &command {
+        Command::Server { verbose, .. } => *verbose,
+        Command::Client { verbose, .. } => *verbose,
+    };
+
+    output::init_tracing(verbose);
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
 
@@ -28,16 +37,16 @@ fn main() {
                 let (cert, key, fingerprint) = match generate_ephemeral_cert() {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("bimap: {e}");
+                        error!("{e}");
                         return 2;
                     }
                 };
-                eprintln!("[bimap-server] fingerprint: {fingerprint}");
+                info!("fingerprint: {fingerprint}");
 
                 let acceptor = match make_tls_acceptor(cert, key) {
                     Ok(a) => a,
                     Err(e) => {
-                        eprintln!("bimap: {e}");
+                        error!("{e}");
                         return 2;
                     }
                 };
@@ -45,29 +54,31 @@ fn main() {
                 let listener = match bind_with_reuse(&bind).await {
                     Ok(l) => l,
                     Err((bind, e)) => {
-                        let has_port_443 = bind.rfind(':').is_some_and(|pos| &bind[pos + 1..] == "443");
-                        let hint = if has_port_443 && e.kind() == std::io::ErrorKind::PermissionDenied {
-                            " (port 443 requires root/sudo; use --bind with port > 1024)"
-                        } else if e.kind() == std::io::ErrorKind::AddrInUse {
-                            " (address already in use)"
-                        } else {
-                            ""
-                        };
-                        eprintln!("bimap: cannot bind {bind}: {e}{hint}");
+                        let has_port_443 =
+                            bind.rfind(':').is_some_and(|pos| &bind[pos + 1..] == "443");
+                        let hint =
+                            if has_port_443 && e.kind() == std::io::ErrorKind::PermissionDenied {
+                                " (port 443 requires root/sudo; use --bind with port > 1024)"
+                            } else if e.kind() == std::io::ErrorKind::AddrInUse {
+                                " (address already in use)"
+                            } else {
+                                ""
+                            };
+                        error!("cannot bind {bind}: {e}{hint}");
                         return 3;
                     }
                 };
-                eprintln!("[bimap-server] listening on {bind}");
+                info!("listening on {bind}");
 
                 loop {
                     let (tls_stream, peer) = match server_tls_accept(&acceptor, &listener).await {
                         Ok(r) => r,
                         Err(e) => {
-                            eprintln!("bimap: accept error: {e}");
+                            error!("accept error: {e}");
                             continue;
                         }
                     };
-                    eprintln!("[bimap-server] connection from {peer}");
+                    info!("connection from {peer}");
 
                     let registry = build_registry();
                     let mut channel = channel_from_tls_stream(tls_stream, verbose);
@@ -79,19 +90,19 @@ fn main() {
                         })
                         .await
                     {
-                        eprintln!("bimap: send hello: {e}");
+                        error!("send hello: {e}");
                         continue;
                     }
 
                     match orchestrator::run_server(channel, &registry, 5000).await {
                         Ok(summary) => {
-                            eprintln!(
-                                "[bimap-server] done: {} passed, {} failed, {} errors",
+                            info!(
+                                "done: {} passed, {} failed, {} errors",
                                 summary.passed, summary.failed, summary.errors
                             );
                         }
                         Err(e) => {
-                            eprintln!("bimap: server session error: {e}");
+                            error!("server session error: {e}");
                         }
                     }
                 }
@@ -109,28 +120,27 @@ fn main() {
                 fingerprint,
                 json,
                 json_export,
-                quiet: _,
                 verbose,
             } => {
                 let (server, port) = if let Some(ref cs) = control_server {
                     let (ip_str, port_str) = match cs.split_once(':') {
                         Some(p) => p,
                         None => {
-                            eprintln!("bimap: --control-server must be ip:port");
+                            error!("--control-server must be ip:port");
                             return 2;
                         }
                     };
                     let ip: IpAddr = match ip_str.parse() {
                         Ok(ip) => ip,
                         Err(_) => {
-                            eprintln!("bimap: bad IP in --control-server");
+                            error!("bad IP in --control-server");
                             return 2;
                         }
                     };
                     let port: u16 = match port_str.parse() {
                         Ok(p) => p,
                         Err(_) => {
-                            eprintln!("bimap: bad port in --control-server");
+                            error!("bad port in --control-server");
                             return 2;
                         }
                     };
@@ -139,7 +149,7 @@ fn main() {
                     match server {
                         Some(s) => (s, port),
                         None => {
-                            eprintln!("bimap: --server or --control-server is required");
+                            error!("--server or --control-server is required");
                             return 2;
                         }
                     }
@@ -177,8 +187,12 @@ fn main() {
                             .is_some_and(|p| p.layer() != bimap::test::Layer::L3)
                     });
                     if has_l4 {
-                        eprintln!("bimap: --port-range required for L4/L7 tests (e.g. --port-range tcp/1-1024)");
-                        eprintln!("       ICMP tests (icmp-ping, icmp-full) work without --port-range");
+                        error!(
+                            "--port-range required for L4/L7 tests (e.g. --port-range tcp/1-1024)"
+                        );
+                        error!(
+                            "       ICMP tests (icmp-ping, icmp-full) work without --port-range"
+                        );
                         return 2;
                     }
                 }
@@ -186,7 +200,7 @@ fn main() {
                 let connector = match make_tls_connector() {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("bimap: {e}");
+                        error!("{e}");
                         return 2;
                     }
                 };
@@ -195,12 +209,12 @@ fn main() {
                 let tls_stream = match client_tls_connect(&connector, &control_target).await {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("bimap: cannot connect to {control_target}: {e}");
+                        error!("cannot connect to {control_target}: {e}");
                         return 3;
                     }
                 };
 
-                let mut channel = channel_from_client_tls(tls_stream, verbose as u8);
+                let mut channel = channel_from_client_tls(tls_stream, verbose);
 
                 let hello = match channel.recv().await {
                     Ok(Message::Hello {
@@ -208,26 +222,26 @@ fn main() {
                         fingerprint: fp,
                     }) => fp,
                     Ok(_) => {
-                        eprintln!("bimap: unexpected message from server");
+                        error!("unexpected message from server");
                         return 3;
                     }
                     Err(e) => {
-                        eprintln!("bimap: recv hello: {e}");
+                        error!("recv hello: {e}");
                         return 3;
                     }
                 };
 
-                eprintln!("[bimap-client] server fingerprint: {hello}");
+                info!("server fingerprint: {hello}");
 
                 if let Some(ref expected) = fingerprint {
                     if hello != *expected
                         && format!("SHA256:{hello}") != *expected
                         && hello != expected.replace("SHA256:", "")
                     {
-                        eprintln!("[bimap-client] fingerprint mismatch!");
+                        error!("fingerprint mismatch!");
                         return 3;
                     }
-                    eprintln!("[bimap-client] fingerprint verified");
+                    info!("fingerprint verified");
                 }
 
                 let port_ranges: Vec<(String, u16, u16)> = port_range
@@ -235,7 +249,7 @@ fn main() {
                     .filter_map(|spec| {
                         let parts: Vec<&str> = spec.splitn(2, '/').collect();
                         if parts.len() != 2 {
-                            eprintln!("bimap: invalid port-range: {spec}");
+                            error!("invalid port-range: {spec}");
                             return None;
                         }
                         let transport = parts[0].to_string();
@@ -268,8 +282,8 @@ fn main() {
                 let registry = build_registry();
                 match orchestrator::run_client(channel, &registry, &config).await {
                     Ok(summary) => {
-                        eprintln!(
-                            "[bimap-client] done: {} passed, {} failed, {} errors",
+                        info!(
+                            "done: {} passed, {} failed, {} errors",
                             summary.passed, summary.failed, summary.errors
                         );
                         if summary.failed > 0 || summary.errors > 0 {
@@ -279,7 +293,7 @@ fn main() {
                         }
                     }
                     Err(e) => {
-                        eprintln!("bimap: client error: {e}");
+                        error!("client error: {e}");
                         3
                     }
                 }

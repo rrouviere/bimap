@@ -1,8 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
+use tracing::{debug, error, trace};
 
 use crate::control::msg::{Message, PortRangeSpec, TestSummary, TransferReport};
 use crate::control::ControlChannel;
+use crate::output::{print_err, print_fail, print_pass, print_summary};
 use crate::test::{Direction, TestContext, TestRegistry, Transport};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,7 +115,6 @@ pub async fn run_server(
                     port,
                     target_addr,
                     timeout: Duration::from_millis(timeout_ms),
-                    verbose: false,
                 };
 
                 let result = proto.run(ctx).await;
@@ -154,7 +155,7 @@ pub struct ClientConfig {
     pub target_addr: IpAddr,
     pub json: bool,
     pub json_export: bool,
-    pub verbose: bool,
+    pub verbose: u8,
 }
 
 pub async fn run_client(
@@ -252,9 +253,7 @@ pub async fn run_client(
                 for dir in directions {
                     let target_addr = SocketAddr::new(config.target_addr, port);
 
-                    if config.verbose {
-                        eprintln!("[v] orchestrator sending test {} to server", id);
-                    }
+                    debug!("orchestrator sending test {} to server", id);
 
                     channel
                         .send(&Message::Test {
@@ -272,19 +271,16 @@ pub async fn run_client(
                         port,
                         target_addr,
                         timeout: Duration::from_millis(config.timeout_ms),
-                        verbose: config.verbose,
                     };
 
-                    if config.verbose {
-                        eprintln!(
-                            "[v] test {} {}/{} port={} {}",
-                            test_name,
-                            transport_str,
-                            port,
-                            port,
-                            dir.as_str()
-                        );
-                    }
+                    trace!(
+                        "test {} {}/{} port={} {}",
+                        test_name,
+                        transport_str,
+                        port,
+                        port,
+                        dir.as_str()
+                    );
 
                     let result = match tokio::time::timeout(
                         Duration::from_millis(config.timeout_ms + 2000),
@@ -306,9 +302,7 @@ pub async fn run_client(
                         ProtocolResult::Error { .. } => errors += 1,
                     }
 
-                    if config.verbose {
-                        eprintln!("[v] orchestrator waiting for report {}", id);
-                    }
+                    debug!("orchestrator waiting for report {}", id);
 
                     let server_error = match tokio::time::timeout(
                         Duration::from_millis(config.timeout_ms),
@@ -318,22 +312,22 @@ pub async fn run_client(
                     {
                         Ok(Ok(Message::Report { error, .. })) => error,
                         Ok(Ok(_)) => {
-                            eprintln!("server: unexpected message (skipping)");
+                            error!("server: unexpected message (skipping)");
                             None
                         }
                         Ok(Err(e)) => {
-                            eprintln!("server: {e}");
+                            error!("server: {e}");
                             None
                         }
                         Err(_) => {
-                            eprintln!("server: timeout (no report within {}ms)", config.timeout_ms);
+                            error!("server: timeout (no report within {}ms)", config.timeout_ms);
                             None
                         }
                     };
 
                     if let Some(ref err_msg) = server_error {
                         if !matches!(result, ProtocolResult::Pass { .. }) {
-                            eprintln!("  server: {err_msg}");
+                            error!("server: {err_msg}");
                         }
                     }
 
@@ -371,7 +365,7 @@ pub async fn run_client(
         print_json_export(&merged, passed, failed, errors);
     } else if !config.json {
         print_merged_results(&merged);
-        print_summary(passed, failed, errors);
+        print_user_summary(passed, failed, errors);
     }
 
     channel.send(&Message::Done).await?;
@@ -475,26 +469,26 @@ fn print_result(
                 sent_bytes,
                 received_bytes,
             } => {
-                println!(
-                    "PASS {protocol} {transport} {port} {} (tx={sent_bytes} rx={received_bytes})",
+                print_pass(format_args!(
+                    "{protocol} {transport} {port} {} (tx={sent_bytes} rx={received_bytes})",
                     direction.as_str()
-                );
+                ));
             }
             ProtocolResult::Fail {
                 reason,
                 sent_bytes,
                 received_bytes,
             } => {
-                println!(
-                    "FAIL {protocol} {transport} {port} {} {reason} (tx={sent_bytes} rx={received_bytes})",
+                print_fail(format_args!(
+                    "{protocol} {transport} {port} {} {reason} (tx={sent_bytes} rx={received_bytes})",
                     direction.as_str()
-                );
+                ));
             }
             ProtocolResult::Error { reason } => {
-                println!(
-                    "ERR  {protocol} {transport} {port} {} {reason}",
+                print_err(format_args!(
+                    "{protocol} {transport} {port} {} {reason}",
                     direction.as_str()
-                );
+                ));
             }
         }
     }
@@ -566,38 +560,40 @@ fn merge_into_ranges(results: &[TestEntry]) -> Vec<MergedEntry> {
 fn print_merged_results(merged: &[MergedEntry]) {
     for m in merged {
         match m.status.as_str() {
-            "pass" => println!(
-                "PASS {} {} {} {} ({} tests)",
+            "pass" => print_pass(format_args!(
+                "{} {} {} {} ({} tests)",
                 m.protocol,
                 m.transport,
                 m.ports,
                 m.direction.as_str(),
                 m.count
-            ),
-            "fail" => println!(
-                "FAIL {} {} {} {} {} ({} tests)",
+            )),
+            "fail" => print_fail(format_args!(
+                "{} {} {} {} {} ({} tests)",
                 m.protocol,
                 m.transport,
                 m.ports,
                 m.direction.as_str(),
                 m.reason,
                 m.count
-            ),
-            "error" => println!(
-                "ERR  {} {} {} {} {}",
+            )),
+            "error" => print_err(format_args!(
+                "{} {} {} {} {}",
                 m.protocol,
                 m.transport,
                 m.ports,
                 m.direction.as_str(),
                 m.reason
-            ),
+            )),
             _ => {}
         }
     }
 }
 
-fn print_summary(passed: u32, failed: u32, errors: u32) {
-    println!("--- {passed} passed, {failed} failed, {errors} errors ---");
+fn print_user_summary(passed: u32, failed: u32, errors: u32) {
+    print_summary(format_args!(
+        "{passed} passed, {failed} failed, {errors} errors"
+    ));
 }
 
 fn print_json_export(merged: &[MergedEntry], passed: u32, failed: u32, errors: u32) {

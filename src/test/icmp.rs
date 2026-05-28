@@ -6,6 +6,7 @@ use std::net::Ipv4Addr;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
+use tracing::{debug, info, trace};
 
 fn has_icmp_capability() -> bool {
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
@@ -83,11 +84,10 @@ async fn send_icmp_echo(
     seq: u16,
     icmp_type: u8,
     timeout: Duration,
-    verbose: bool,
 ) -> ProtocolResult {
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
     if fd < 0 {
-        return send_icmp_echo_raw(dest, id, seq, icmp_type, timeout, verbose).await;
+        return send_icmp_echo_raw(dest, id, seq, icmp_type, timeout).await;
     }
 
     if let Err(e) = unsafe { set_socket_timeout(fd, timeout) } {
@@ -98,9 +98,7 @@ async fn send_icmp_echo(
     let payload = b"bimap";
     let sa = to_sockaddr_in(dest);
 
-    if verbose {
-        eprintln!("[v] icmp ping-socket sending echo request to {dest}");
-    }
+    debug!("icmp ping-socket sending echo request to {dest}");
 
     let sent = unsafe {
         libc::sendto(
@@ -120,12 +118,10 @@ async fn send_icmp_echo(
         };
     }
 
-    if verbose {
-        eprintln!(
-            "[v] icmp waiting for echo reply (timeout={}ms)",
-            timeout.as_millis()
-        );
-    }
+    trace!(
+        "icmp waiting for echo reply (timeout={}ms)",
+        timeout.as_millis()
+    );
 
     let mut recv_buf = [0u8; 1500];
     let received = unsafe {
@@ -171,7 +167,6 @@ async fn send_icmp_echo_raw(
     seq: u16,
     icmp_type: u8,
     timeout: Duration,
-    verbose: bool,
 ) -> ProtocolResult {
     if !has_icmp_capability() {
         return ProtocolResult::Error {
@@ -197,9 +192,7 @@ async fn send_icmp_echo_raw(
     let packet = build_icmp_echo(icmp_type, id, seq, payload);
 
     let sa = to_sockaddr_in(dest);
-    if verbose {
-        eprintln!("[v] icmp raw sending type={} seq={}", icmp_type, seq);
-    }
+    debug!("icmp raw sending type={} seq={}", icmp_type, seq);
     let sent = unsafe {
         libc::sendto(
             fd,
@@ -220,12 +213,10 @@ async fn send_icmp_echo_raw(
         };
     }
 
-    if verbose {
-        eprintln!(
-            "[v] icmp raw waiting for reply (timeout={}ms)",
-            timeout.as_millis()
-        );
-    }
+    trace!(
+        "icmp raw waiting for reply (timeout={}ms)",
+        timeout.as_millis()
+    );
     let start = std::time::Instant::now();
     loop {
         let elapsed = start.elapsed();
@@ -331,12 +322,10 @@ impl TestProtocol for IcmpPingTest {
             }
         };
 
-        if ctx.verbose {
-            eprintln!(
-                "[v] icmp-ping spawning ping -c 1 -n -W {} {dest}",
-                ctx.timeout.as_secs()
-            );
-        }
+        debug!(
+            "icmp-ping spawning ping -c 1 -n -W {} {dest}",
+            ctx.timeout.as_secs()
+        );
 
         let timeout_secs = ctx.timeout.as_secs().max(1);
         let output = Command::new("ping")
@@ -409,24 +398,17 @@ impl TestProtocol for IcmpFullTest {
 
         let mut result_count = 0u64;
         for (idx, &(icmp_type, name)) in ALL_ICMP_TYPES.iter().enumerate() {
-            let result = send_icmp_echo(
-                dest,
-                icmp_type as u16,
-                idx as u16,
-                icmp_type,
-                ctx.timeout,
-                ctx.verbose,
-            )
-            .await;
+            let result =
+                send_icmp_echo(dest, icmp_type as u16, idx as u16, icmp_type, ctx.timeout).await;
             match &result {
                 ProtocolResult::Pass { .. } => {
-                    eprintln!("icmp-full: type={} ({}) pass", icmp_type, name);
+                    info!("icmp-full: type={} ({}) pass", icmp_type, name);
                 }
                 ProtocolResult::Fail { reason, .. } => {
-                    eprintln!("icmp-full: type={} ({}) fail: {}", icmp_type, name, reason);
+                    info!("icmp-full: type={} ({}) fail: {}", icmp_type, name, reason);
                 }
                 ProtocolResult::Error { reason } => {
-                    eprintln!("icmp-full: type={} ({}) error: {}", icmp_type, name, reason);
+                    info!("icmp-full: type={} ({}) error: {}", icmp_type, name, reason);
                 }
             }
             result_count += 1;

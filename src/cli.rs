@@ -73,13 +73,9 @@ pub enum Command {
         #[arg(long)]
         json_export: bool,
 
-        /// Suppress passing tests from output
-        #[arg(short = 'q', long)]
-        quiet: bool,
-
-        /// Verbose debug output including timing and raw hex
-        #[arg(short = 'v', long)]
-        verbose: bool,
+        /// Verbose debug output. -v = debug, -vv = trace
+        #[arg(short = 'v', long, action = clap::ArgAction::Count, default_value_t = 0)]
+        verbose: u8,
     },
 }
 

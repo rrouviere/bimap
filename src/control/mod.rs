@@ -3,6 +3,7 @@ pub mod tls;
 
 use msg::Message;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tracing::{debug, trace};
 
 pub struct ControlChannel {
     reader: Box<dyn AsyncRead + Unpin + Send>,
@@ -14,10 +15,10 @@ impl ControlChannel {
     pub async fn send(&mut self, msg: &Message) -> Result<(), String> {
         let mut json = serde_json::to_vec(msg).map_err(|e| format!("serialize: {e}"))?;
         if self.verbose >= 1 {
-            eprintln!("[v] ctrl send: {} bytes", json.len());
+            debug!("ctrl send: {} bytes", json.len());
         }
         if self.verbose >= 3 {
-            eprintln!("[bimap-server] >>> {}", String::from_utf8_lossy(&json));
+            trace!(">>> {}", String::from_utf8_lossy(&json));
         }
         json.push(b'\n');
         self.writer
@@ -29,7 +30,7 @@ impl ControlChannel {
     pub async fn recv(&mut self) -> Result<Message, String> {
         let mut line = String::new();
         if self.verbose >= 1 {
-            eprintln!("[v] ctrl waiting for response");
+            debug!("ctrl waiting for response");
         }
         let mut reader = BufReader::new(&mut self.reader);
         reader
@@ -41,7 +42,7 @@ impl ControlChannel {
         }
         let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
         if self.verbose >= 3 {
-            eprintln!("[bimap-server] <<< {trimmed}");
+            trace!("<<< {trimmed}");
         }
         serde_json::from_str(trimmed).map_err(|e| format!("deserialize: {e}"))
     }
