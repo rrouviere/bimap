@@ -17,15 +17,12 @@ serde_json        JSON control messages
 socket2           socket options
 libc              raw syscalls for ICMP socket I/O
 sha2              SHA-256 hashing for data integrity verification
-pnet_packet       IP, TCP, UDP, ICMP header structs (battle-tested)
+async-trait       async trait method support
 hickory-proto     DNS protocol structures (RFC-compliant)
 ```
 
-Protocol headers come from well-maintained crates instead of manual implementations:
-- `pnet_packet` for L3/L4 headers (IP, TCP, UDP, ICMP) — 10+ years of iteration
-- `hickory-proto` for DNS wire format — trusted-dns heritage, full RFC coverage
-
-This eliminates ~300 LOC of manual header code and its associated bugs (checksum edge cases, DNS name compression, etc.).
+DNS uses `hickory-proto` for RFC-compliant wire format.
+IP, TCP, UDP, ICMP headers are manual C-style structs in `src/packet/` (planned migration to `pnet_packet`).
 
 ## Binary layout
 
@@ -44,9 +41,16 @@ src/
     port.rs            open + 1kb transfer (L4, TCP/UDP via tokio)
     tls_test.rs        TLS handshake + 1kb data transfer (L7, via rustls)
     dns.rs             DNS query/response via TCP & UDP (L7)
+  packet/
+    mod.rs             Packet trait, checksum helpers
+    ip.rs              IP header struct (manual C-style)
+    tcp.rs             TCP header struct (manual C-style)
+    udp.rs             UDP header struct (manual C-style)
+    icmp.rs            ICMP header struct (manual C-style)
 ```
 
-No more `packet/` directory — protocol headers come from crates.
+IP, TCP, UDP, ICMP headers are manual C-style structs in `src/packet/` (planned migration to `pnet_packet`).
+DNS uses `hickory-proto` for RFC-compliant wire format.
 
 ## Control protocol
 

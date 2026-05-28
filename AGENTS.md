@@ -57,15 +57,27 @@ Adding a new protocol:
 4. L1 integration tests use ports 10000–19999 on localhost.
 5. ICMP tests are `#[ignore = "root_required"]` + runtime `geteuid() == 0` guard.
 
-## Dependency budget
+## Subagent rules
 
-7 crates. Do NOT add new deps without updating ARCHI.MD and justifying in commit message.
+- **caveman mode required.** All agents communicate in caveman (high). No filler, no preamble, no postamble. Think in caveman too.
+- **End RCA with 5 Whys.** The root cause is almost always "wrong abstraction layer, reinventing the wheel."
+- **QA writes failing test before Dev starts.** TDD only.
+- **User persona validates on real instances.** Not unit tests. Real server + client.
+
+## Dependency budget (12 crates)
+
+Do NOT add new deps without updating ARCHI.MD and justifying in commit message.
 
 ```
-clap, tokio, tokio-rustls, rustls, rcgen, serde, serde_json, socket2
+clap, tokio, tokio-rustls, rustls, rcgen, serde, serde_json,
+socket2, sha2, async-trait, libc, hickory-proto
 ```
 
-All packet headers (IP, TCP, UDP, ICMP, DNS) are manual structs — no `pnet`, no `hickory-dns`.
+DNS uses `hickory-proto` (RFC-compliant wire format). IP/TCP/UDP/ICMP headers are manual structs in `src/packet/` (planned migration to `pnet_packet`).
+
+## Iteration loop
+
+Bug fixes follow: QA (write failing test) → Dev (fix) → User persona (validate on real instances) → If fail: loop back.
 
 ## Gotchas
 

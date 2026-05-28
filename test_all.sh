@@ -1,5 +1,5 @@
 #!/bin/bash
-BIN=bimap
+BIN=./target/release/bimap
 PASS=0
 FAIL=0
 
