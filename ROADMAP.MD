@@ -61,13 +61,25 @@ Fix: eliminate 300+ LOC of manual wire-format parsing. Reliability increase.
 | 5b | Dev | `fix/udp-retry` | Add retry loop to UDP target recv_from | ✅ DONE — commit bd72f64 |
 | 5c | User persona | — | Final real-world validation after fix | ✅ DONE — FINAL APPROVAL. 45/45 test_all, 20/20 DNS UDP stress |
 
+### Iteration 6 — ICMP-ping uses ping command (version 0.2.4)
+
+ICMP raw sockets on modern Linux (kernel 6.1) don't reliably receive echo replies — kernel's ICMP handler consumes them before raw socket delivery. Standard ping uses `SOCK_DGRAM` + `IPPROTO_ICMP` (ping sockets) but this system has `ping_group_range = 1 0` disabling them.
+
+| Step | Agent | Worktree | Deliverable | Status |
+|------|-------|----------|-------------|--------|
+| 6a | Dev | `fix/icmp-recvloop` | Raw socket recvfrom loop (skips non-matching ICMP) | ✅ DONE — e2aff93 |
+| 6b | Dev | `fix/icmp-capabilities` | Capability probe (ping socket + raw socket fallback) | ✅ DONE — f1e747e |
+| 6c | Dev | `fix/icmp-pingsocket` | Ping socket attempt (fails on this system) | ✅ DONE — 1d9f2ca |
+| 6d | Dev | `master` | Use `ping -c 1` command via tokio::process | ✅ DONE — f7cb364 |
+| 6e | User persona | — | Validate ICMP against real server 162.38.112.67:10443 | ✅ DONE — PASS tx=13 rx=13 |
+
 ---
 
 ## Known issues
 
 | Issue | Status | Notes |
 |-------|--------|-------|
-| icmp-ping broken | ✅ FIXED (91875d9) | Checksum included payload per RFC 792 |
+| ICMP-ping against remote | ✅ FIXED (f7cb364) | Uses `ping -c 1` command (raw sockets unreliable on kernel 6.1+ for echo replies) |
 | 1kb broken | ✅ FIXED (4bdcaa6) | UDP double-send eliminated |
 | Manual packet headers | ✅ FIXED (95ade15) | pnet_packet migration, -494 LOC |
 | No CI pipeline | ✅ FIXED (f80d535) | GitHub Actions on push/PR |
