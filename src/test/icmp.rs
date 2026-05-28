@@ -1,6 +1,5 @@
 use crate::orchestrator::ProtocolResult;
-use crate::packet::icmp::{IcmpHeader, ALL_ICMP_TYPES, ICMP_TYPE_ECHO_REPLY};
-use crate::packet::ip::Ipv4Header;
+use crate::packet::icmp::{type_name, ALL_ICMP_TYPES, ICMP_TYPE_ECHO_REPLY};
 use crate::test::{Direction, Layer, TestContext, TestProtocol, Transport};
 use async_trait::async_trait;
 use std::net::Ipv4Addr;
@@ -48,6 +47,24 @@ fn to_sockaddr_in(addr: Ipv4Addr) -> libc::sockaddr_in {
     sa
 }
 
+fn build_icmp_echo(icmp_type: u8, id: u16, seq: u16, payload: &[u8]) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(8 + payload.len());
+    packet.push(icmp_type);
+    packet.push(0);
+    packet.extend_from_slice(&[0u8; 2]);
+    packet.extend_from_slice(&id.to_be_bytes());
+    packet.extend_from_slice(&seq.to_be_bytes());
+    packet.extend_from_slice(payload);
+    let csum = pnet_packet::util::checksum(&packet, packet.len());
+    packet[2..4].copy_from_slice(&csum.to_be_bytes());
+    packet
+}
+
+fn ip_header_len(buf: &[u8]) -> Option<usize> {
+    let packet = pnet_packet::ipv4::Ipv4Packet::new(buf)?;
+    Some((packet.get_header_length() as usize) * 4)
+}
+
 async fn send_icmp_echo(
     dest: Ipv4Addr,
     id: u16,
@@ -76,18 +93,7 @@ async fn send_icmp_echo(
     }
 
     let payload = b"bimap";
-    let icmp = IcmpHeader {
-        icmp_type,
-        code: 0,
-        checksum: 0,
-        identifier: id,
-        sequence: seq,
-    };
-    let csum = icmp.compute_checksum(payload);
-    let mut packet = icmp.encode();
-    packet[2] = (csum >> 8) as u8;
-    packet[3] = (csum & 0xFF) as u8;
-    packet.extend_from_slice(payload);
+    let packet = build_icmp_echo(icmp_type, id, seq, payload);
 
     let sa = to_sockaddr_in(dest);
     let sent = unsafe {
@@ -145,8 +151,8 @@ async fn send_icmp_echo(
     }
 
     let n = received as usize;
-    let iph = match Ipv4Header::decode(&recv_buf[..n]) {
-        Some(h) => h,
+    let icmp_offset = match ip_header_len(&recv_buf[..n]) {
+        Some(offset) => offset,
         None => {
             return ProtocolResult::Fail {
                 reason: "bad IP header".into(),
@@ -156,7 +162,6 @@ async fn send_icmp_echo(
         }
     };
 
-    let icmp_offset = (iph.ihl * 4) as usize;
     if icmp_offset + 8 > n {
         return ProtocolResult::Fail {
             reason: "short ICMP reply".into(),
@@ -165,8 +170,8 @@ async fn send_icmp_echo(
         };
     }
 
-    let reply = match IcmpHeader::decode(&recv_buf[icmp_offset..]) {
-        Some(r) => r,
+    let icmp_packet = match pnet_packet::icmp::IcmpPacket::new(&recv_buf[icmp_offset..n]) {
+        Some(p) => p,
         None => {
             return ProtocolResult::Fail {
                 reason: "bad ICMP header".into(),
@@ -176,7 +181,7 @@ async fn send_icmp_echo(
         }
     };
 
-    if reply.icmp_type == ICMP_TYPE_ECHO_REPLY {
+    if icmp_packet.get_icmp_type().0 == ICMP_TYPE_ECHO_REPLY {
         ProtocolResult::Pass {
             sent_bytes: sent as u64,
             received_bytes: n as u64,
@@ -185,7 +190,7 @@ async fn send_icmp_echo(
         ProtocolResult::Fail {
             reason: format!(
                 "unexpected ICMP type: {}",
-                IcmpHeader::type_name(reply.icmp_type)
+                type_name(icmp_packet.get_icmp_type().0)
             ),
             sent_bytes: sent as u64,
             received_bytes: n as u64,
@@ -301,7 +306,6 @@ mod tests {
     #[test]
     fn is_root_returns_bool() {
         let _result = is_root();
-        // Function must not panic
     }
 
     #[test]

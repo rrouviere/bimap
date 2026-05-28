@@ -32,6 +32,7 @@ sha2 = "0.10"
 async-trait = "0.1"
 libc = "0.2"
 hickory-proto = "0.24"
+pnet_packet = "0.34"
 
 [profile.release]
 opt-level = 2
