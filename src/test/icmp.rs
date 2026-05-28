@@ -71,6 +71,7 @@ async fn send_icmp_echo(
     seq: u16,
     icmp_type: u8,
     timeout: Duration,
+    verbose: bool,
 ) -> ProtocolResult {
     if !is_root() {
         return ProtocolResult::Error {
@@ -96,6 +97,9 @@ async fn send_icmp_echo(
     let packet = build_icmp_echo(icmp_type, id, seq, payload);
 
     let sa = to_sockaddr_in(dest);
+    if verbose {
+        eprintln!("[v] icmp sending type={} seq={}", icmp_type, seq);
+    }
     let sent = unsafe {
         libc::sendto(
             fd,
@@ -116,6 +120,12 @@ async fn send_icmp_echo(
         };
     }
 
+    if verbose {
+        eprintln!(
+            "[v] icmp waiting for reply (timeout={}ms)",
+            timeout.as_millis()
+        );
+    }
     let mut recv_buf = [0u8; 1500];
     let received = unsafe {
         libc::recvfrom(
@@ -231,7 +241,7 @@ impl TestProtocol for IcmpPingTest {
             }
         };
 
-        send_icmp_echo(dest, 0x42, 1, 8, ctx.timeout).await
+        send_icmp_echo(dest, 0x42, 1, 8, ctx.timeout, ctx.verbose).await
     }
 }
 
@@ -276,8 +286,15 @@ impl TestProtocol for IcmpFullTest {
 
         let mut result_count = 0u64;
         for (idx, &(icmp_type, name)) in ALL_ICMP_TYPES.iter().enumerate() {
-            let result =
-                send_icmp_echo(dest, icmp_type as u16, idx as u16, icmp_type, ctx.timeout).await;
+            let result = send_icmp_echo(
+                dest,
+                icmp_type as u16,
+                idx as u16,
+                icmp_type,
+                ctx.timeout,
+                ctx.verbose,
+            )
+            .await;
             match &result {
                 ProtocolResult::Pass { .. } => {
                     eprintln!("icmp-full: type={} ({}) pass", icmp_type, name);

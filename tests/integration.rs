@@ -27,7 +27,7 @@ async fn setup_both_channels(port: u16) -> (ControlChannel, ControlChannel, Stri
     let client_tls = client_tls_connect(&connector, &format!("127.0.0.1:{port}"))
         .await
         .expect("connect");
-    let client_channel = channel_from_client_tls(client_tls);
+    let client_channel = channel_from_client_tls(client_tls, 0);
     let server_channel = server_handle.await.expect("server spawn");
 
     (server_channel, client_channel, fingerprint)
@@ -119,6 +119,7 @@ async fn full_open_test_loopback() {
         timeout_ms: 5000,
         server_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         json: false,
+        verbose: false,
     };
     let client_summary = orchestrator::run_client(client, &registry, &config)
         .await

@@ -73,6 +73,7 @@ pub async fn run_server(
                     port,
                     target_addr,
                     timeout: Duration::from_millis(timeout_ms),
+                    verbose: false,
                 };
 
                 let result = proto.run(ctx).await;
@@ -111,6 +112,7 @@ pub struct ClientConfig {
     pub timeout_ms: u64,
     pub server_addr: IpAddr,
     pub json: bool,
+    pub verbose: bool,
 }
 
 pub async fn run_client(
@@ -206,6 +208,10 @@ pub async fn run_client(
                 for dir in directions {
                     let target_addr = SocketAddr::new(config.server_addr, port);
 
+                    if config.verbose {
+                        eprintln!("[v] orchestrator sending test {} to server", id);
+                    }
+
                     channel
                         .send(&Message::Test {
                             id,
@@ -222,7 +228,19 @@ pub async fn run_client(
                         port,
                         target_addr,
                         timeout: Duration::from_millis(config.timeout_ms),
+                        verbose: config.verbose,
                     };
+
+                    if config.verbose {
+                        eprintln!(
+                            "[v] test {} {}/{} port={} {}",
+                            test_name,
+                            transport_str,
+                            port,
+                            port,
+                            dir.as_str()
+                        );
+                    }
 
                     let result = proto.run(ctx).await;
 
@@ -241,6 +259,10 @@ pub async fn run_client(
                         &result,
                         config.json,
                     );
+
+                    if config.verbose {
+                        eprintln!("[v] orchestrator waiting for report {}", id);
+                    }
 
                     // Read server's Report
                     match channel.recv().await? {

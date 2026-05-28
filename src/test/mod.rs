@@ -66,6 +66,7 @@ pub struct TestContext {
     pub port: u16,
     pub target_addr: SocketAddr,
     pub timeout: Duration,
+    pub verbose: bool,
 }
 
 #[async_trait]

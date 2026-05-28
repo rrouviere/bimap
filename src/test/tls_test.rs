@@ -65,7 +65,11 @@ impl rustls::client::danger::ServerCertVerifier for NoVerify {
     }
 }
 
-async fn tls_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
+async fn tls_initiator(
+    target: SocketAddr,
+    timeout: std::time::Duration,
+    verbose: bool,
+) -> ProtocolResult {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
     let config = match rustls::ClientConfig::builder_with_provider(provider.clone())
@@ -100,6 +104,9 @@ async fn tls_initiator(target: SocketAddr, timeout: std::time::Duration) -> Prot
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        if verbose {
+            eprintln!("[v] tls connecting to {}:{}", target.ip(), target.port());
+        }
         match tokio::time::timeout(timeout, TcpStream::connect(target)).await {
             Ok(Ok(s)) => {
                 tcp_stream = Some(s);
@@ -131,6 +138,9 @@ async fn tls_initiator(target: SocketAddr, timeout: std::time::Duration) -> Prot
         }
     };
 
+    if verbose {
+        eprintln!("[v] tls starting handshake with localhost");
+    }
     let mut tls_stream =
         match tokio::time::timeout(timeout, connector.connect(domain, tcp_stream)).await {
             Ok(Ok(s)) => s,
@@ -152,6 +162,9 @@ async fn tls_initiator(target: SocketAddr, timeout: std::time::Duration) -> Prot
 
     let payload = kb_payload();
 
+    if verbose {
+        eprintln!("[v] tls sending {} bytes", payload.len());
+    }
     match tokio::time::timeout(timeout, tls_stream.write_all(&payload)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
@@ -171,6 +184,9 @@ async fn tls_initiator(target: SocketAddr, timeout: std::time::Duration) -> Prot
     }
 
     let mut buf = vec![0u8; KB];
+    if verbose {
+        eprintln!("[v] tls waiting for {} bytes", KB);
+    }
     match tokio::time::timeout(timeout, tls_stream.read_exact(&mut buf)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
@@ -205,7 +221,7 @@ async fn tls_initiator(target: SocketAddr, timeout: std::time::Duration) -> Prot
     }
 }
 
-async fn tls_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
+async fn tls_target(port: u16, timeout: std::time::Duration, verbose: bool) -> ProtocolResult {
     let (cert_der, key_der, _fingerprint) = match generate_ephemeral_cert() {
         Ok(c) => c,
         Err(e) => {
@@ -250,6 +266,9 @@ async fn tls_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
         }
     };
 
+    if verbose {
+        eprintln!("[v] tls waiting for connection on port {}", port);
+    }
     let (tcp_stream, _) = match tokio::time::timeout(timeout, listener.accept()).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
@@ -268,6 +287,9 @@ async fn tls_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
         }
     };
 
+    if verbose {
+        eprintln!("[v] tls starting handshake");
+    }
     let mut tls_stream = match tokio::time::timeout(timeout, acceptor.accept(tcp_stream)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
@@ -287,6 +309,9 @@ async fn tls_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
     };
 
     let mut buf = vec![0u8; KB];
+    if verbose {
+        eprintln!("[v] tls waiting for {} bytes", KB);
+    }
     match tokio::time::timeout(timeout, tls_stream.read_exact(&mut buf)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
@@ -305,6 +330,9 @@ async fn tls_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
         }
     }
 
+    if verbose {
+        eprintln!("[v] tls sending {} bytes", buf.len());
+    }
     match tokio::time::timeout(timeout, tls_stream.write_all(&buf)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
@@ -347,8 +375,10 @@ impl TestProtocol for TlsTest {
 
     async fn run(&self, ctx: TestContext) -> ProtocolResult {
         match ctx.direction {
-            Direction::ClientToServer => tls_initiator(ctx.target_addr, ctx.timeout).await,
-            Direction::ServerToClient => tls_target(ctx.port, ctx.timeout).await,
+            Direction::ClientToServer => {
+                tls_initiator(ctx.target_addr, ctx.timeout, ctx.verbose).await
+            }
+            Direction::ServerToClient => tls_target(ctx.port, ctx.timeout, ctx.verbose).await,
         }
     }
 }

@@ -106,7 +106,7 @@ fn main() {
                 fingerprint,
                 json,
                 quiet: _,
-                verbose: _,
+                verbose,
             } => {
                 use bimap::control::channel_from_client_tls;
                 use bimap::control::tls::{client_tls_connect, make_tls_connector};
@@ -164,7 +164,7 @@ fn main() {
                     }
                 };
 
-                let mut channel = channel_from_client_tls(tls_stream);
+                let mut channel = channel_from_client_tls(tls_stream, verbose as u8);
 
                 let hello = match channel.recv().await {
                     Ok(Message::Hello {
@@ -224,6 +224,7 @@ fn main() {
                     timeout_ms: timeout,
                     server_addr: server,
                     json,
+                    verbose,
                 };
 
                 let registry = build_registry();

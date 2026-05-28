@@ -13,6 +13,9 @@ pub struct ControlChannel {
 impl ControlChannel {
     pub async fn send(&mut self, msg: &Message) -> Result<(), String> {
         let mut json = serde_json::to_vec(msg).map_err(|e| format!("serialize: {e}"))?;
+        if self.verbose >= 1 {
+            eprintln!("[v] ctrl send: {} bytes", json.len());
+        }
         if self.verbose >= 3 {
             eprintln!("[bimap-server] >>> {}", String::from_utf8_lossy(&json));
         }
@@ -25,6 +28,9 @@ impl ControlChannel {
 
     pub async fn recv(&mut self) -> Result<Message, String> {
         let mut line = String::new();
+        if self.verbose >= 1 {
+            eprintln!("[v] ctrl waiting for response");
+        }
         let mut reader = BufReader::new(&mut self.reader);
         reader
             .read_line(&mut line)
@@ -63,7 +69,8 @@ pub fn channel_from_tls_stream(
 
 pub fn channel_from_client_tls(
     stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    verbose: u8,
 ) -> ControlChannel {
     let (rx, tx) = tokio::io::split(stream);
-    new_channel(Box::new(rx), Box::new(tx), 0)
+    new_channel(Box::new(rx), Box::new(tx), verbose)
 }
