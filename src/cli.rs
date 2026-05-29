@@ -35,9 +35,9 @@ pub enum Command {
         #[arg(long, value_name = "ADDRESS")]
         target: Option<String>,
 
-        /// Server address (required unless --control-server is given)
-        #[arg(long, value_name = "IP", required = false)]
-        server: Option<std::net::IpAddr>,
+        /// Server address (IP or hostname, required unless --control-server is given)
+        #[arg(long, value_name = "ADDRESS", required = false)]
+        server: Option<String>,
 
         /// Control port (default: 443)
         #[arg(long, default_value_t = 443)]

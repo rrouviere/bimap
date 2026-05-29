@@ -5,6 +5,12 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::process;
 use tracing::{debug, error, info};
 
+fn strip_ipv6_brackets(s: &str) -> &str {
+    s.strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(s)
+}
+
 fn main() {
     let command = match parse() {
         Ok(cmd) => cmd,
@@ -134,7 +140,26 @@ fn main() {
                     (sock_addr.ip(), sock_addr.port())
                 } else {
                     match server {
-                        Some(s) => (s, port),
+                        Some(ref s) => {
+                            let s = strip_ipv6_brackets(s);
+                            let ip: IpAddr = match s.parse() {
+                                Ok(ip) => ip,
+                                Err(_) => match (s, port).to_socket_addrs() {
+                                    Ok(mut addrs) => match addrs.next() {
+                                        Some(a) => a.ip(),
+                                        None => {
+                                            error!("could not resolve server '{s}'");
+                                            return 2;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!("could not resolve server '{s}': {e}");
+                                        return 2;
+                                    }
+                                },
+                            };
+                            (ip, port)
+                        }
                         None => {
                             error!("--server or --control-server is required");
                             return 2;
@@ -142,21 +167,24 @@ fn main() {
                     }
                 };
                 let target_str = target.unwrap_or_else(|| server.to_string());
-                let target_ip: IpAddr = match target_str.parse() {
-                    Ok(ip) => ip,
-                    Err(_) => match (target_str.as_str(), 0).to_socket_addrs() {
-                        Ok(mut addrs) => match addrs.next() {
-                            Some(a) => a.ip(),
-                            None => {
-                                error!("could not resolve '{target_str}': no addresses");
+                let target_ip: IpAddr = {
+                    let s = strip_ipv6_brackets(&target_str);
+                    match s.parse() {
+                        Ok(ip) => ip,
+                        Err(_) => match (s, 0).to_socket_addrs() {
+                            Ok(mut addrs) => match addrs.next() {
+                                Some(a) => a.ip(),
+                                None => {
+                                    error!("could not resolve '{target_str}': no addresses");
+                                    return 2;
+                                }
+                            },
+                            Err(e) => {
+                                error!("could not resolve '{target_str}': {e}");
                                 return 2;
                             }
                         },
-                        Err(e) => {
-                            error!("could not resolve '{target_str}': {e}");
-                            return 2;
-                        }
-                    },
+                    }
                 };
                 use bimap::control::channel_from_client_tls;
                 use bimap::control::tls::{client_tls_connect, make_tls_connector};
