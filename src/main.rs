@@ -1,8 +1,7 @@
 use bimap::cli::{parse, Command};
 use bimap::control::msg::Message;
 use bimap::output;
-use std::net::IpAddr;
-use std::net::ToSocketAddrs;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::process;
 use tracing::{debug, error, info};
 
@@ -125,28 +124,14 @@ fn main() {
                 quiet,
             } => {
                 let (server, port) = if let Some(ref cs) = control_server {
-                    let (ip_str, port_str) = match cs.split_once(':') {
-                        Some(p) => p,
-                        None => {
-                            error!("--control-server must be ip:port");
-                            return 2;
-                        }
-                    };
-                    let ip: IpAddr = match ip_str.parse() {
-                        Ok(ip) => ip,
+                    let sock_addr: SocketAddr = match cs.parse() {
+                        Ok(a) => a,
                         Err(_) => {
-                            error!("bad IP in --control-server");
+                            error!("--control-server must be ip:port (IPv6: [::1]:443)");
                             return 2;
                         }
                     };
-                    let port: u16 = match port_str.parse() {
-                        Ok(p) => p,
-                        Err(_) => {
-                            error!("bad port in --control-server");
-                            return 2;
-                        }
-                    };
-                    (ip, port)
+                    (sock_addr.ip(), sock_addr.port())
                 } else {
                     match server {
                         Some(s) => (s, port),
@@ -156,7 +141,23 @@ fn main() {
                         }
                     }
                 };
-                let target = target.unwrap_or(server);
+                let target_str = target.unwrap_or_else(|| server.to_string());
+                let target_ip: IpAddr = match target_str.parse() {
+                    Ok(ip) => ip,
+                    Err(_) => match (target_str.as_str(), 0).to_socket_addrs() {
+                        Ok(mut addrs) => match addrs.next() {
+                            Some(a) => a.ip(),
+                            None => {
+                                error!("could not resolve '{target_str}': no addresses");
+                                return 2;
+                            }
+                        },
+                        Err(e) => {
+                            error!("could not resolve '{target_str}': {e}");
+                            return 2;
+                        }
+                    },
+                };
                 use bimap::control::channel_from_client_tls;
                 use bimap::control::tls::{client_tls_connect, make_tls_connector};
                 use bimap::orchestrator;
@@ -207,8 +208,8 @@ fn main() {
                     }
                 };
 
-                let control_target = format!("{server}:{port}");
-                let tls_stream = match client_tls_connect(&connector, &control_target).await {
+                let control_target = SocketAddr::new(server, port);
+                let tls_stream = match client_tls_connect(&connector, control_target).await {
                     Ok(s) => s,
                     Err(e) => {
                         error!("cannot connect to {control_target}: {e}");
@@ -276,7 +277,8 @@ fn main() {
                     timeout_ms: timeout,
                     parallel,
                     server_addr: server,
-                    target_addr: target,
+                    target_str,
+                    target_ip,
                     json,
                     json_export,
                     verbose,

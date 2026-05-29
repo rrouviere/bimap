@@ -109,9 +109,8 @@ async fn tcp_open_initiator(target: SocketAddr, timeout: std::time::Duration) ->
     }
 }
 
-async fn tcp_open_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
-    let bind_addr = format!("0.0.0.0:{port}");
-    let listener = match TcpListener::bind(&bind_addr).await {
+async fn tcp_open_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
+    let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
             return ProtocolResult::Error {
@@ -120,7 +119,7 @@ async fn tcp_open_target(port: u16, timeout: std::time::Duration) -> ProtocolRes
         }
     };
 
-    debug!("waiting for connection on port {}", port);
+    debug!("waiting for connection on {}", addr);
     match tokio::time::timeout(timeout, listener.accept()).await {
         Ok(Ok((mut stream, _addr))) => {
             let mut buf = [0u8; 1];
@@ -177,7 +176,12 @@ async fn tcp_open_target(port: u16, timeout: std::time::Duration) -> ProtocolRes
 }
 
 async fn udp_open_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let socket = match UdpSocket::bind("0.0.0.0:0").await {
+    let bind_addr = if target.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let socket = match UdpSocket::bind(bind_addr).await {
         Ok(s) => s,
         Err(e) => {
             return ProtocolResult::Error {
@@ -248,9 +252,8 @@ async fn udp_open_initiator(target: SocketAddr, timeout: std::time::Duration) ->
     }
 }
 
-async fn udp_open_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
-    let bind_addr = format!("0.0.0.0:{port}");
-    let socket = match UdpSocket::bind(&bind_addr).await {
+async fn udp_open_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
+    let socket = match UdpSocket::bind(addr).await {
         Ok(s) => s,
         Err(e) => {
             return ProtocolResult::Error {
@@ -331,11 +334,11 @@ impl TestProtocol for OpenTest {
         match ctx.transport {
             Transport::Tcp => match ctx.direction {
                 Direction::ClientToServer => tcp_open_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => tcp_open_target(ctx.port, ctx.timeout).await,
+                Direction::ServerToClient => tcp_open_target(ctx.target_addr, ctx.timeout).await,
             },
             Transport::Udp => match ctx.direction {
                 Direction::ClientToServer => udp_open_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => udp_open_target(ctx.port, ctx.timeout).await,
+                Direction::ServerToClient => udp_open_target(ctx.target_addr, ctx.timeout).await,
             },
             Transport::Icmp => ProtocolResult::Error {
                 reason: "ICMP not supported by open test".into(),
@@ -465,9 +468,8 @@ async fn tcp_1kb_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
     }
 }
 
-async fn tcp_1kb_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
-    let bind_addr = format!("0.0.0.0:{port}");
-    let listener = match TcpListener::bind(&bind_addr).await {
+async fn tcp_1kb_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
+    let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
             return ProtocolResult::Error {
@@ -476,7 +478,7 @@ async fn tcp_1kb_target(port: u16, timeout: std::time::Duration) -> ProtocolResu
         }
     };
 
-    debug!("waiting for connection on port {}", port);
+    debug!("waiting for connection on {}", addr);
     let (mut stream, _) = match tokio::time::timeout(timeout, listener.accept()).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
@@ -549,7 +551,12 @@ async fn tcp_1kb_target(port: u16, timeout: std::time::Duration) -> ProtocolResu
 }
 
 async fn udp_1kb_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let socket = match UdpSocket::bind("0.0.0.0:0").await {
+    let bind_addr = if target.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let socket = match UdpSocket::bind(bind_addr).await {
         Ok(s) => s,
         Err(e) => {
             return ProtocolResult::Error {
@@ -629,9 +636,8 @@ async fn udp_1kb_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
     }
 }
 
-async fn udp_1kb_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
-    let bind_addr = format!("0.0.0.0:{port}");
-    let socket = match UdpSocket::bind(&bind_addr).await {
+async fn udp_1kb_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
+    let socket = match UdpSocket::bind(addr).await {
         Ok(s) => s,
         Err(e) => {
             return ProtocolResult::Error {
@@ -712,11 +718,11 @@ impl TestProtocol for KbTest {
         match ctx.transport {
             Transport::Tcp => match ctx.direction {
                 Direction::ClientToServer => tcp_1kb_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => tcp_1kb_target(ctx.port, ctx.timeout).await,
+                Direction::ServerToClient => tcp_1kb_target(ctx.target_addr, ctx.timeout).await,
             },
             Transport::Udp => match ctx.direction {
                 Direction::ClientToServer => udp_1kb_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => udp_1kb_target(ctx.port, ctx.timeout).await,
+                Direction::ServerToClient => udp_1kb_target(ctx.target_addr, ctx.timeout).await,
             },
             Transport::Icmp => ProtocolResult::Error {
                 reason: "ICMP not supported by 1kb test".into(),

@@ -210,7 +210,7 @@ async fn tls_initiator(target: SocketAddr, timeout: std::time::Duration) -> Prot
     }
 }
 
-async fn tls_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
+async fn tls_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
     let (cert_der, key_der, _fingerprint) = match generate_ephemeral_cert() {
         Ok(c) => c,
         Err(e) => {
@@ -245,8 +245,7 @@ async fn tls_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
     };
 
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-    let bind_addr = format!("0.0.0.0:{port}");
-    let listener = match TcpListener::bind(&bind_addr).await {
+    let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
             return ProtocolResult::Error {
@@ -255,7 +254,7 @@ async fn tls_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
         }
     };
 
-    debug!("tls waiting for connection on port {}", port);
+    debug!("tls waiting for connection on {}", addr);
     let (tcp_stream, _) = match tokio::time::timeout(timeout, listener.accept()).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
@@ -357,7 +356,7 @@ impl TestProtocol for TlsTest {
     async fn run(&self, ctx: TestContext) -> ProtocolResult {
         match ctx.direction {
             Direction::ClientToServer => tls_initiator(ctx.target_addr, ctx.timeout).await,
-            Direction::ServerToClient => tls_target(ctx.port, ctx.timeout).await,
+            Direction::ServerToClient => tls_target(ctx.target_addr, ctx.timeout).await,
         }
     }
 }

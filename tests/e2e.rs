@@ -5,6 +5,8 @@ const E2E_SERVER_PORT: u16 = 14333;
 const E2E_FINGERPRINT_PORT: u16 = 14434;
 const E2E_FULL_OPEN_PORT: u16 = 14435;
 const E2E_UNKNOWN_PORT: u16 = 14436;
+const E2E_TARGET_HOSTNAME_PORT: u16 = 14437;
+const E2E_IPV6_CTRL_PORT: u16 = 14438;
 
 #[test]
 fn binary_help_output() {
@@ -243,4 +245,56 @@ fn l4_test_without_port_range_is_config_error() {
         .output()
         .expect("run client");
     assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn target_hostname_resolves_to_connection_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bimap"))
+        .args([
+            "client",
+            "--server",
+            "127.0.0.1",
+            "--port",
+            &E2E_TARGET_HOSTNAME_PORT.to_string(),
+            "--target",
+            "localhost",
+            "--test",
+            "open",
+            "--port-range",
+            "tcp/1-1",
+            "--timeout",
+            "1000",
+        ])
+        .output()
+        .expect("run client");
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 3,
+        "--target localhost should resolve and attempt connection (got exit {code})"
+    );
+}
+
+#[test]
+fn control_server_ipv6_bracket_notation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bimap"))
+        .args([
+            "client",
+            "--control-server",
+            &format!("[::1]:{}", E2E_IPV6_CTRL_PORT),
+            "--target",
+            "127.0.0.1",
+            "--test",
+            "open",
+            "--port-range",
+            "tcp/1-1",
+            "--timeout",
+            "1000",
+        ])
+        .output()
+        .expect("run client");
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 3,
+        "--control-server [::1]:port should parse IPv6 bracket notation (got exit {code})"
+    );
 }

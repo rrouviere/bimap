@@ -1,6 +1,7 @@
 use rcgen::{CertificateParams, DistinguishedName, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use sha2::{Digest, Sha256};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -123,11 +124,11 @@ pub async fn server_tls_accept(
 
 pub async fn client_tls_connect(
     connector: &TlsConnector,
-    target: &str,
+    target: SocketAddr,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
     let stream = TcpStream::connect(target)
         .await
-        .map_err(|e| format!("connect: {e}"))?;
+        .map_err(|e| format!("connect {target}: {e}"))?;
     let server_name =
         ServerName::try_from("localhost").map_err(|_| "bad server name".to_string())?;
     let tls_stream = connector

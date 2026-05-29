@@ -24,7 +24,8 @@ async fn setup_both_channels(port: u16) -> (ControlChannel, ControlChannel, Stri
     });
 
     let connector = make_tls_connector().expect("connector");
-    let client_tls = client_tls_connect(&connector, &format!("127.0.0.1:{port}"))
+    let control_target: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+    let client_tls = client_tls_connect(&connector, control_target)
         .await
         .expect("connect");
     let client_channel = channel_from_client_tls(client_tls, 0);
@@ -123,7 +124,8 @@ async fn full_open_test_loopback() {
         timeout_ms: 5000,
         parallel: 1,
         server_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-        target_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        target_str: "127.0.0.1".to_string(),
+        target_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         json: false,
         json_export: false,
         verbose: 0,

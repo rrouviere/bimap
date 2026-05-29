@@ -1,5 +1,4 @@
 use clap::{Parser, Subcommand};
-use std::net::IpAddr;
 
 #[derive(Parser)]
 #[command(name = "bimap", version, about = "Bidirectional network mapper")]
@@ -13,8 +12,8 @@ pub enum Command {
     /// Start bimap in server mode (responds to client test requests)
     #[command(name = "server")]
     Server {
-        /// Bind address (default: 0.0.0.0:443)
-        #[arg(long, default_value = "0.0.0.0:443")]
+        /// Bind address (default: [::]:443 — dual-stack on Linux, IPv6-only on macOS/Windows)
+        #[arg(long, default_value = "[::]:443")]
         bind: String,
 
         /// Verbose debug output. -vvv dumps raw messages
@@ -28,17 +27,17 @@ pub enum Command {
         after_help = "AVAILABLE TESTS:\n  open        L4  tcp,udp  — TCP/1-byte or UDP echo roundtrip\n  1kb         L4  tcp,udp  — 1024-byte data roundtrip + SHA-256 check\n  icmp-ping   L3  icmp     — ICMP echo request/reply (root required)\n  icmp-full   L3  icmp     — full ICMP type scan (root required)\n  tls         L7  tcp      — TLS handshake + 1024-byte SHA-256 check\n  dns         L7  tcp,udp  — DNS A query for example.com\n\nRun without --test to list available tests."
     )]
     Client {
-        /// Control server address (ip:port). Replaces --server + --port
+        /// Control server address (ip:port, IPv6: [::1]:443). Replaces --server + --port
         #[arg(long, value_name = "IP:PORT")]
         control_server: Option<String>,
 
-        /// Target IP for tests (default: control server IP)
-        #[arg(long, value_name = "IP")]
-        target: Option<IpAddr>,
+        /// Target address for tests (IP or hostname, default: control server IP)
+        #[arg(long, value_name = "ADDRESS")]
+        target: Option<String>,
 
         /// Server address (required unless --control-server is given)
         #[arg(long, value_name = "IP", required = false)]
-        server: Option<IpAddr>,
+        server: Option<std::net::IpAddr>,
 
         /// Control port (default: 443)
         #[arg(long, default_value_t = 443)]
@@ -61,7 +60,7 @@ pub enum Command {
         #[arg(long, default_value_t = 500)]
         timeout: u64,
 
-        /// Trust this SHA-256 certificate fingerprint, skip interactive prompt
+        /// Auto-accept by default. If set, must match server SHA-256 fingerprint or we refuse
         #[arg(long, value_name = "HASH")]
         fingerprint: Option<String>,
 

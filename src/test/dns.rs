@@ -17,8 +17,13 @@ fn next_query_id() -> u16 {
 }
 
 async fn dns_udp_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    debug!("dns binding udp port 0");
-    let socket = match UdpSocket::bind("0.0.0.0:0").await {
+    let bind_addr = if target.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    debug!("dns binding udp on {}", bind_addr);
+    let socket = match UdpSocket::bind(bind_addr).await {
         Ok(s) => s,
         Err(e) => {
             return ProtocolResult::Error {
@@ -227,10 +232,9 @@ async fn dns_tcp_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
     }
 }
 
-async fn dns_udp_target(port: u16, _timeout: std::time::Duration) -> ProtocolResult {
-    let bind_addr = format!("0.0.0.0:{port}");
-    debug!("dns binding udp port {}", port);
-    let socket = match UdpSocket::bind(&bind_addr).await {
+async fn dns_udp_target(addr: SocketAddr, _timeout: std::time::Duration) -> ProtocolResult {
+    debug!("dns binding udp on {}", addr);
+    let socket = match UdpSocket::bind(addr).await {
         Ok(s) => s,
         Err(e) => {
             return ProtocolResult::Error {
@@ -296,10 +300,9 @@ async fn dns_udp_target(port: u16, _timeout: std::time::Duration) -> ProtocolRes
     }
 }
 
-async fn dns_tcp_target(port: u16, timeout: std::time::Duration) -> ProtocolResult {
-    let bind_addr = format!("0.0.0.0:{port}");
-    debug!("dns binding udp port {}", port);
-    let listener = match TcpListener::bind(&bind_addr).await {
+async fn dns_tcp_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
+    debug!("dns binding tcp on {}", addr);
+    let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
             return ProtocolResult::Error {
@@ -308,7 +311,7 @@ async fn dns_tcp_target(port: u16, timeout: std::time::Duration) -> ProtocolResu
         }
     };
 
-    debug!("dns tcp waiting for connection on port {}", port);
+    debug!("dns tcp waiting for connection on {}", addr);
     let (mut stream, _) = match tokio::time::timeout(timeout, listener.accept()).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
@@ -434,11 +437,11 @@ impl TestProtocol for DnsTest {
         match ctx.transport {
             Transport::Tcp => match ctx.direction {
                 Direction::ClientToServer => dns_tcp_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => dns_tcp_target(ctx.port, ctx.timeout).await,
+                Direction::ServerToClient => dns_tcp_target(ctx.target_addr, ctx.timeout).await,
             },
             Transport::Udp => match ctx.direction {
                 Direction::ClientToServer => dns_udp_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => dns_udp_target(ctx.port, ctx.timeout).await,
+                Direction::ServerToClient => dns_udp_target(ctx.target_addr, ctx.timeout).await,
             },
             Transport::Icmp => ProtocolResult::Error {
                 reason: "ICMP not supported by DNS test".into(),

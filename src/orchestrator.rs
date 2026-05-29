@@ -1,7 +1,7 @@
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 use tracing::{debug, trace};
 
@@ -127,7 +127,7 @@ pub async fn run_server(
                     Direction::ClientToServer => Direction::ServerToClient,
                     Direction::ServerToClient => Direction::ClientToServer,
                 };
-                let bind_ip = test_bind_ip.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                let bind_ip = test_bind_ip.unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
                 let target_addr = SocketAddr::new(bind_ip, port);
                 let batch = vec![ServerBatchEntry {
                     id,
@@ -161,7 +161,7 @@ pub async fn run_server(
                         Direction::ClientToServer => Direction::ServerToClient,
                         Direction::ServerToClient => Direction::ClientToServer,
                     };
-                    let bind_ip = test_bind_ip.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                    let bind_ip = test_bind_ip.unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
                     let target_addr = SocketAddr::new(bind_ip, port);
                     batch.push(ServerBatchEntry {
                         id,
@@ -231,7 +231,8 @@ pub struct ClientConfig {
     pub timeout_ms: u64,
     pub parallel: usize,
     pub server_addr: IpAddr,
-    pub target_addr: IpAddr,
+    pub target_str: String,
+    pub target_ip: IpAddr,
     pub json: bool,
     pub json_export: bool,
     pub verbose: u8,
@@ -281,7 +282,7 @@ async fn execute_batch(
     let mut unordered: FuturesUnordered<_> = batch
         .iter()
         .map(|entry| {
-            let target_addr = SocketAddr::new(config.target_addr, entry.port);
+            let target_addr = SocketAddr::new(config.target_ip, entry.port);
             let ctx = TestContext {
                 direction: entry.direction,
                 transport: entry.transport,
@@ -530,7 +531,7 @@ pub async fn run_client(
             tests: config.tests.to_vec(),
             port_ranges: port_range_specs,
             bidir: config.bidir,
-            target: Some(config.target_addr.to_string()),
+            target: Some(config.target_str.clone()),
             timeout_ms: config.timeout_ms,
             client_version: PROTOCOL_VERSION,
             parallel: config.parallel,
@@ -576,7 +577,7 @@ pub async fn run_client(
                     };
 
                     for dir in directions {
-                        let target_addr = SocketAddr::new(config.target_addr, port);
+                        let target_addr = SocketAddr::new(config.target_ip, port);
 
                         debug!("orchestrator sending test {} to server", id);
 
