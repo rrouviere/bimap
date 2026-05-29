@@ -7,6 +7,7 @@ const E2E_FULL_OPEN_PORT: u16 = 14435;
 const E2E_UNKNOWN_PORT: u16 = 14436;
 const E2E_TARGET_HOSTNAME_PORT: u16 = 14437;
 const E2E_IPV6_CTRL_PORT: u16 = 14438;
+const E2E_HOSTNAME_SERVER_PORT: u16 = 14439;
 
 #[test]
 fn binary_help_output() {
@@ -296,5 +297,50 @@ fn control_server_ipv6_bracket_notation() {
     assert_eq!(
         code, 3,
         "--control-server [::1]:port should parse IPv6 bracket notation (got exit {code})"
+    );
+}
+
+#[test]
+fn server_and_client_with_hostnames_e2e() {
+    let mut server = Command::new(env!("CARGO_BIN_EXE_bimap"))
+        .args([
+            "server",
+            "--bind",
+            &format!("localhost:{E2E_HOSTNAME_SERVER_PORT}"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    let client_output = Command::new(env!("CARGO_BIN_EXE_bimap"))
+        .args([
+            "client",
+            "--server",
+            "localhost",
+            "--port",
+            &E2E_HOSTNAME_SERVER_PORT.to_string(),
+            "--test",
+            "open",
+            "--port-range",
+            "tcp/35002-35003",
+            "--timeout",
+            "3000",
+        ])
+        .output()
+        .expect("run client");
+
+    server.kill().ok();
+    server.wait().ok();
+
+    let stdout = String::from_utf8_lossy(&client_output.stdout);
+    let stderr = String::from_utf8_lossy(&client_output.stderr);
+
+    assert_eq!(
+        client_output.status.code().unwrap_or(-1),
+        0,
+        "hostname e2e should exit 0: stdout={stdout} stderr={stderr}"
     );
 }
