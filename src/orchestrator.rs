@@ -301,6 +301,7 @@ async fn execute_batch(
     let mut next_print = first_id;
     let interactive = is_interactive() && !config.json && !config.json_export;
     let mut fail_map: PortMap<(String, String, String, String), Vec<u16>> = PortMap::new();
+    let mut pass_map: PortMap<(String, String, String), Vec<u16>> = PortMap::new();
 
     while let Some((id, result)) = unordered.next().await {
         match &result {
@@ -331,7 +332,12 @@ async fn execute_batch(
                             sent_bytes,
                             received_bytes,
                         } => {
-                            // Interactive mode: condense — skip per-line PASS
+                            let key = (
+                                entry.test_name.to_string(),
+                                entry.transport_str.to_string(),
+                                entry.direction.as_str().to_string(),
+                            );
+                            pass_map.entry(key).or_default().push(entry.port);
                             if !interactive && !config.quiet {
                                 print_pass(format_args!(
                                     "{} {} {} {} (tx={} rx={})",
@@ -349,14 +355,14 @@ async fn execute_batch(
                             sent_bytes,
                             received_bytes,
                         } => {
+                            let key = (
+                                entry.test_name.to_string(),
+                                entry.transport_str.to_string(),
+                                entry.direction.as_str().to_string(),
+                                reason.clone(),
+                            );
+                            fail_map.entry(key).or_default().push(entry.port);
                             if interactive {
-                                let key = (
-                                    entry.test_name.to_string(),
-                                    entry.transport_str.to_string(),
-                                    entry.direction.as_str().to_string(),
-                                    reason.clone(),
-                                );
-                                fail_map.entry(key).or_default().push(entry.port);
                                 let mut line = String::new();
                                 for ((tn, ts, dir, r), ports) in &fail_map {
                                     if !line.is_empty() {
@@ -380,14 +386,14 @@ async fn execute_batch(
                             }
                         }
                         ProtocolResult::Error { reason } => {
+                            let key = (
+                                entry.test_name.to_string(),
+                                entry.transport_str.to_string(),
+                                entry.direction.as_str().to_string(),
+                                reason.clone(),
+                            );
+                            fail_map.entry(key).or_default().push(entry.port);
                             if interactive {
-                                let key = (
-                                    entry.test_name.to_string(),
-                                    entry.transport_str.to_string(),
-                                    entry.direction.as_str().to_string(),
-                                    reason.clone(),
-                                );
-                                fail_map.entry(key).or_default().push(entry.port);
                                 let mut line = String::new();
                                 for ((tn, ts, dir, r), ports) in &fail_map {
                                     if !line.is_empty() {
@@ -417,11 +423,14 @@ async fn execute_batch(
 
     if interactive {
         finish_fail_line();
-        // Print consolidated fail lines
-        for ((tn, ts, dir, r), ports) in &fail_map {
-            let ranges = format_port_ranges(ports);
-            print_fail(format_args!("{tn} {ts} {ranges} {dir} {r}"));
-        }
+    }
+    for ((tn, ts, dir), ports) in &pass_map {
+        let ranges = format_port_ranges(ports);
+        print_pass(format_args!("{tn} {ts} {ranges} {dir}"));
+    }
+    for ((tn, ts, dir, r), ports) in &fail_map {
+        let ranges = format_port_ranges(ports);
+        print_fail(format_args!("{tn} {ts} {ranges} {dir} {r}"));
     }
 
     // Read server Reports, match by ID (not position) to avoid desync
