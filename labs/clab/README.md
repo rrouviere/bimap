@@ -125,6 +125,7 @@ tmux kill-session -t bimap-demo 2>/dev/null || true
 |---|---|
 | `bimap.clab.yml` | containerlab topology — three Debian containers, veth links, nftables rules. |
 | `demo.tmux.sh` | deploys the lab if needed, opens a 3-pane tmux session. |
+| `demo-record.sh` | self-contained script for `asciinema rec` — deploys lab, runs demo, tears down. |
 | `firewall.nft` | nftables ruleset loaded into the firewall container. |
 | `README.md` | this file. |
 

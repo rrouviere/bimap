@@ -6,7 +6,7 @@ It can be used for firewall rule enumeration and middlebox characterisation.
 Bimap requires the client to be able to communicate with the server over https (tcp/443) to check whether the data received at one end is the same as what was sent.
 This is a current limitation.
 
-<a href="https://asciinema.org/a/BMMyEkpRd3IIh0Ez"><img src="https://asciinema.org/a/BMMyEkpRd3IIh0Ez.svg" alt="asciinema CLI demo" width="100%" /></a>
+<a href="https://asciinema.org/a/BMMyEkpRd3IIh0Ez"><img src="https://asciinema.org/a/BMMyEkpRd3IIh0Ez.svg" alt="bimap demo: discovering firewall policies with a forward scan" width="100%" /></a>
 
 ## Features
 Bimap is composed of tests suites. Each test has a client and server component and the result is checked over the control connection
