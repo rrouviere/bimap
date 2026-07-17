@@ -53,9 +53,9 @@ fi
 
 bold "Lab running. Attaching tmux panes…"
 bold "Server:    bimap server --bind 0.0.0.0:4242"
-bold "Client:    bimap client --control-server 10.0.1.2:4242 --fingerprint <paste> --test 1kb --port-range tcp/1-200 -q"
+bold "Client:    bimap client --control-server 10.0.1.2:4242 --fingerprint <paste> --test 1kb --port-range tcp/1-200"
 bold "Firewall:  nft list chain inet bimap forward_chain   # show current rules"
-bold "(--bidir cross-host is a future demo; see README's 'Why bidir?' section)"
+bold "(forward scan only; --bidir cross-host requires a bimap core fix)"
 bold
 
 # Build the session -----------------------------------------------------------
@@ -120,7 +120,7 @@ tmux send-keys -t "$SERVER_PANE" \
   "bimap server --bind 0.0.0.0:4242"
 
 tmux send-keys -t "$CLIENT_PANE" \
-  "bimap client --control-server 10.0.1.2:4242 --test 1kb --port-range tcp/1-300"
+  "bimap client --control-server 10.0.1.2:4242 --test 1kb --port-range tcp/1-200"
 
 tmux send-keys -t "$FIREWALL_PANE" \
   "nft list chain inet bimap forward_chain"

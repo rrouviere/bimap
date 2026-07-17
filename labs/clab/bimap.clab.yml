@@ -1,12 +1,9 @@
 # Bimap stateful-firewall demo.
 # Brings up two Linux hosts (client, server) and a Linux middlebox (firewall)
 # running nftables, wired point-to-point so all bimap traffic crosses the
-# middlebox.  The firewall is stateful (conntrack): once a TCP handshake
-# completes, all subsequent packets in that flow bypass the forward policy
-# rules.  This models a realistic DMZ: the client subnet may initiate
-# connections to a limited set of service ports, the server subnet may push
-# data back freely, and the control channel (tcp/4242) is exempted for the
-# bimap orchestrator.
+# middlebox.  The firewall uses stateful conntrack with a per-port allowlist:
+# only tcp/{22,80,443,8080} is allowed client→server; server→client allows
+# all TCP.  The control channel (tcp/4242) is exempted.
 #
 # Topology:
 #
@@ -14,36 +11,15 @@
 #   client:eth1 ──── firewall:eth1      firewall:eth2 ──── server:eth1
 #   10.0.0.2/24      10.0.0.1/24        10.0.1.1/24        10.0.1.2/24
 #
-# Firewall policy (nftables, stateful):
-#
-#   direction            ports            conntrack       action
-#   ────────────────     ───────────      ───────────     ──────
-#   any                          -        invalid         drop
-#   any                          -        established     accept
-#   any                     tcp/4242        -             accept
-#   client→server    22,80,443,8080        -             accept
-#   server→client        all TCP            -             accept
-#   default                       -        -             drop
-#
-# A bimap forward scan (client→server, ports 1-300) will pass only on
-# ports {22,80,443,8080,4242}; every other port hits the policy drop.
-# The backward half is reserved for a future --bidir demo (cross-host
-# bidir needs a bimap core fix — see labs/clab/README.md "Why bidir?").
-# The conntrack rule ensures that once a connection is established the
-# return data-plane traffic does not get re-evaluated against the policy.
-#
-# IP plan is static and visible here so the audience can correlate it with
-# bimap's output during the demo.
+# A bimap forward scan (client→server, ports 1-200) reveals that only
+# tcp/22 and tcp/80 pass; every other port hits the policy drop.
 #
 # Implementation notes:
 #   - debian:12-slim ships without `ip` and `nft`, so each container's first
-#     exec lines install iproute2 (and nftables on the firewall). Each exec
-#     list entry is one docker exec argument vector, so no shell operators
-#     like `&&` are allowed — entries run sequentially on the lab host.
+#     exec lines install iproute2 (and nftables on the firewall).
 #   - The nftables ruleset lives in firewall.nft (beside this file) and is
 #     bind-mounted into the firewall container, then loaded with
-#     `nft -f /etc/bimap/firewall.nft`. Keeps the curly-brace chain decl
-#     out of YAML quoting hell.
+#     `nft -f /etc/bimap/firewall.nft`.
 
 name: bimap
 prefix: ""                         # short container names: server, client, firewall
