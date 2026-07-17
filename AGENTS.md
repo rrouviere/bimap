@@ -54,6 +54,15 @@ Adding a new protocol:
 3. If raw packet needed, add header struct in `src/packet/`
 4. Write tests first (see TESTING.MD)
 
+## Demo lab (containerlab)
+
+`labs/clab/` holds a containerlab topology + tmux launcher that brings up two
+Linux hosts and a middlebox running nftables. A bimap forward scan reveals a
+stateful DMZ firewall policy — only SSH and HTTP pass forward, everything else
+is blocked. Requires Docker + containerlab on the host; the host-built
+`target/release/bimap` is bind-mounted into the containers. See
+`labs/clab/README.md`.
+
 ## Testing rules (TDD)
 
 1. Never weaken a failing test assertion to make it pass.

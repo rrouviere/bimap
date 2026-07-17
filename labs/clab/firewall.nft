@@ -1,0 +1,25 @@
+add table inet bimap
+
+# Inbound path: packets arrive from eth1 (client side, 10.0.0.0/24) or
+# eth2 (server side, 10.0.1.0/24).  Conntrack is populated by the first
+# packet of each flow; the "established,related" rule lets every subsequent
+# packet through without re-checking the policy matrix, so that a bimap
+# 1KB test (SYN → SYN/ACK → ACK → data → FIN) does not fail on its own
+# response packets when the reverse direction is administratively dropped.
+add chain inet bimap forward_chain { type filter hook forward priority 0; policy drop; }
+
+# Drop malformed / connection-tracker-bypass attempts immediately.
+add rule inet bimap forward_chain ct state invalid counter drop
+
+# Already-tracked flows: let them through untouched.
+add rule inet bimap forward_chain ct state established,related counter accept
+
+# Control-plane channel — the bimap client ↔ server test orchestrator.
+# Must be reachable from both sides before any data-plane test runs.
+add rule inet bimap forward_chain tcp dport 4242 counter accept
+
+# Client → server: allow well-known services only.
+add rule inet bimap forward_chain ip saddr 10.0.0.0/24 tcp dport {22,80,443,8080} counter accept
+
+# Server → client: allow all TCP (application servers push data).
+add rule inet bimap forward_chain ip saddr 10.0.1.0/24 meta l4proto tcp accept

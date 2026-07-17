@@ -332,13 +332,16 @@ async fn execute_batch(
                             sent_bytes,
                             received_bytes,
                         } => {
-                            let key = (
-                                entry.test_name.to_string(),
-                                entry.transport_str.to_string(),
-                                entry.direction.as_str().to_string(),
-                            );
-                            pass_map.entry(key).or_default().push(entry.port);
-                            if !interactive && !config.quiet {
+                            if interactive {
+                                pass_map
+                                    .entry((
+                                        entry.test_name.to_string(),
+                                        entry.transport_str.to_string(),
+                                        entry.direction.as_str().to_string(),
+                                    ))
+                                    .or_default()
+                                    .push(entry.port);
+                            } else if !config.quiet {
                                 print_pass(format_args!(
                                     "{} {} {} {} (tx={} rx={})",
                                     entry.test_name,
@@ -423,14 +426,9 @@ async fn execute_batch(
 
     if interactive {
         finish_fail_line();
-    }
-    for ((tn, ts, dir), ports) in &pass_map {
-        let ranges = format_port_ranges(ports);
-        print_pass(format_args!("{tn} {ts} {ranges} {dir}"));
-    }
-    for ((tn, ts, dir, r), ports) in &fail_map {
-        let ranges = format_port_ranges(ports);
-        print_fail(format_args!("{tn} {ts} {ranges} {dir} {r}"));
+        for line in consolidated_pass_lines(&pass_map) {
+            print_pass(format_args!("{line}"));
+        }
     }
 
     // Read server Reports, match by ID (not position) to avoid desync
@@ -885,6 +883,26 @@ fn parse_direction(s: &str) -> Result<Direction, String> {
     }
 }
 
+/// Build the consolidated PASS port-range lines to print once the live
+/// scan loop finishes.
+///
+/// In interactive mode per-port PASS lines are suppressed during the loop
+/// (they would flicker against the `\r`-overwriting fail line on the same
+/// row); passes accumulate silently in `pass_map` instead. After the loop
+/// `finish_fail_line` finalises the fail row, then this helper turns the
+/// collected pass groups into one line per group: `"<test> <transport>
+/// <port-ranges> <direction>"`. Fails are NOT included here — they are
+/// already visible on the live fail row above, and reprinting them was the
+/// duplication bug. callers should `print_pass` each returned line.
+fn consolidated_pass_lines(pass_map: &HashMap<(String, String, String), Vec<u16>>) -> Vec<String> {
+    pass_map
+        .iter()
+        .map(|((tn, ts, dir), ports)| {
+            format!("{} {} {} {}", tn, ts, format_port_ranges(ports), dir)
+        })
+        .collect()
+}
+
 fn protocol_result_to_report(id: u32, result: &ProtocolResult) -> Message {
     match result {
         ProtocolResult::Pass {
@@ -1129,5 +1147,33 @@ mod tests {
     #[test]
     fn parse_direction_invalid() {
         assert!(parse_direction("invalid").is_err());
+    }
+
+    #[test]
+    fn consolidated_pass_lines_groups_contiguous_ports() {
+        let mut pass_map: HashMap<(String, String, String), Vec<u16>> = HashMap::new();
+        pass_map.insert(
+            ("1kb".into(), "tcp".into(), "->".into()),
+            vec![1, 2, 3, 5, 6],
+        );
+        let lines = consolidated_pass_lines(&pass_map);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "1kb tcp 1-3,5-6 ->");
+    }
+
+    #[test]
+    fn consolidated_pass_lines_empty_when_no_passes() {
+        let pass_map: HashMap<(String, String, String), Vec<u16>> = HashMap::new();
+        assert!(consolidated_pass_lines(&pass_map).is_empty());
+    }
+
+    #[test]
+    fn consolidated_pass_lines_emits_one_line_per_group() {
+        let mut pass_map: HashMap<(String, String, String), Vec<u16>> = HashMap::new();
+        pass_map.insert(("1kb".into(), "tcp".into(), "->".into()), vec![1, 2]);
+        pass_map.insert(("1kb".into(), "tcp".into(), "<-".into()), vec![10, 11]);
+        let mut lines = consolidated_pass_lines(&pass_map);
+        lines.sort_unstable();
+        assert_eq!(lines, vec!["1kb tcp 1-2 ->", "1kb tcp 10-11 <-"]);
     }
 }

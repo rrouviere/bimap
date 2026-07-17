@@ -1,3 +1,9 @@
 /target
 *.dopolytech.fr
 *.homecloud
+
+# containerlab transient artefacts (per-lab dir, snapshot, lock)
+labs/clab/*.clab/
+labs/clab/clab-*
+labs/clab/anime.txt
+labs/clab/secret.txt
