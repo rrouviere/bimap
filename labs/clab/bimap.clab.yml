@@ -1,0 +1,92 @@
+# Bimap firewall-matrix demo.
+# Brings up two Linux hosts (client, server) and a Linux middlebox (firewall)
+# running nftables, wired point-to-point so all bimap traffic crosses the
+# middlebox. The firewall is pre-configured with an asymmetric four-quadrant
+# port policy over tcp/1-200 (see the matrix table below). A bimap forward
+# scan reveals the forward half today; the backward half is reserved for a
+# future --bidir demo (cross-host bidir needs a bimap core fix — see
+# labs/clab/README.md "Why bidir?").
+#
+# Topology:
+#
+#   10.0.0.0/24                        10.0.1.0/24
+#   client:eth1 ──── firewall:eth1      firewall:eth2 ──── server:eth1
+#   10.0.0.2/24      10.0.0.1/24        10.0.1.1/24        10.0.1.2/24
+#
+# Firewall policy (nftables, stateless, per-direction drops):
+#
+#   tcp port range   client→server   server→client   meaning
+#   ─────────────    ────────────    ────────────    ───────────────────────
+#   1-50             allow           allow            open both ways
+#   51-100           allow           drop             server publishes only
+#   101-150          drop            allow            server pushes only
+#   151-200          drop            drop             fully closed
+#
+# Control channel tcp/4242 is outside the tested range and always allowed.
+#
+# IP plan is hand-written and visible here so the audience can correlate it
+# with bimap's output during the demo.
+#
+# Implementation notes:
+#   - debian:12-slim ships without `ip` and `nft`, so each container's first
+#     exec lines install iproute2 (and nftables on the firewall). Each exec
+#     list entry is one docker exec argument vector, so no shell operators
+#     like `&&` are allowed — entries run sequentially on the lab host.
+#   - The nftables ruleset lives in firewall.nft (beside this file) and is
+#     bind-mounted into the firewall container, then loaded with
+#     `nft -f /etc/bimap/firewall.nft`. Keeps the curly-brace chain decl
+#     out of YAML quoting hell.
+
+name: bimap
+prefix: ""                         # short container names: server, client, firewall
+
+mgmt:
+  network: clab-bimap-mgmt        # only for `docker exec`; datapath uses veth subnets
+  ipv4-subnet: 172.20.21.0/24
+
+topology:
+  defaults:
+    kind: linux
+
+  nodes:
+    server:
+      image: debian:12-slim
+      binds:
+        - ../../target/release/bimap:/usr/local/bin/bimap:ro
+      exec:
+        - apt-get update
+        - apt-get install -y iproute2
+        - ip addr add 10.0.1.2/24 dev eth1
+        - ip link set eth1 up
+        - ip route replace default via 10.0.1.1
+
+    client:
+      image: debian:12-slim
+      binds:
+        - ../../target/release/bimap:/usr/local/bin/bimap:ro
+      exec:
+        - apt-get update
+        - apt-get install -y iproute2
+        - ip addr add 10.0.0.2/24 dev eth1
+        - ip link set eth1 up
+        - ip route replace default via 10.0.0.1
+
+    firewall:
+      image: debian:12-slim
+      cap-add: [NET_ADMIN]
+      sysctls:
+        net.ipv4.ip_forward: 1
+      binds:
+        - ./firewall.nft:/etc/bimap/firewall.nft:ro
+      exec:
+        - apt-get update
+        - apt-get install -y iproute2 nftables
+        - ip addr add 10.0.0.1/24 dev eth1
+        - ip addr add 10.0.1.1/24 dev eth2
+        - ip link set eth1 up
+        - ip link set eth2 up
+        - nft -f /etc/bimap/firewall.nft
+
+  links:
+    - endpoints: ["client:eth1",   "firewall:eth1"]
+    - endpoints: ["firewall:eth2",  "server:eth1"]

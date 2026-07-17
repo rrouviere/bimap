@@ -54,6 +54,17 @@ Adding a new protocol:
 3. If raw packet needed, add header struct in `src/packet/`
 4. Write tests first (see TESTING.MD)
 
+## Demo lab (containerlab)
+
+`labs/clab/` holds a containerlab topology + tmux launcher that brings up two
+Linux hosts and a middlebox running nftables. A bimap forward scan reveals the
+forward half of a four-quadrant asymmetric firewall policy; the backward half is
+reserved for `--bidir`, which today is broken cross-host (bimap's `--target`
+flag is overloaded — see `labs/clab/README.md` "Why bidir?"). Requires Docker
++ containerlab on the host; the host-built `target/release/bimap` is
+bind-mounted into the containers, no Docker image build needed. See
+`labs/clab/README.md`.
+
 ## Testing rules (TDD)
 
 1. Never weaken a failing test assertion to make it pass.

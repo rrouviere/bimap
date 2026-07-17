@@ -1,0 +1,6 @@
+add table inet bimap
+add chain inet bimap forward_chain { type filter hook forward priority 0; policy accept; }
+add rule inet bimap forward_chain ip saddr 10.0.0.0/24 ip daddr 10.0.1.0/24 tcp dport 101-150 counter drop
+add rule inet bimap forward_chain ip saddr 10.0.0.0/24 ip daddr 10.0.1.0/24 tcp dport 151-200 counter drop
+add rule inet bimap forward_chain ip saddr 10.0.1.0/24 ip daddr 10.0.0.0/24 tcp dport 51-100 counter drop
+add rule inet bimap forward_chain ip saddr 10.0.1.0/24 ip daddr 10.0.0.0/24 tcp dport 151-200 counter drop
