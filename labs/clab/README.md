@@ -115,7 +115,7 @@ nft 'delete rule inet bimap forward_chain handle 14'
 
 ```sh
 # detach from tmux with Ctrl-B d; then:
-containerlab destroy -t labs/clab/bimap.clab.yml --cleanup
+containerlab destroy -t labs/clab/bimap.clab.yml
 tmux kill-session -t bimap-demo 2>/dev/null || true
 ```
 
