@@ -4,9 +4,16 @@ use crate::test::{Direction, Layer, TestContext, TestProtocol, Transport};
 use async_trait::async_trait;
 use std::net::Ipv4Addr;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use tokio::process::Command;
 use tracing::{debug, info, trace};
+
+static NEXT_ICMP_ID: AtomicU16 = AtomicU16::new(0xB100);
+
+fn next_icmp_id() -> u16 {
+    NEXT_ICMP_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 fn has_icmp_capability() -> bool {
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
@@ -79,6 +86,22 @@ fn ip_header_len(buf: &[u8]) -> Option<usize> {
     Some((packet.get_header_length() as usize) * 4)
 }
 
+fn reply_matches(
+    packet: &[u8],
+    offset: usize,
+    expected_type: u8,
+    id: u16,
+    sequence: u16,
+    expected_payload: &[u8],
+) -> bool {
+    if offset + 8 > packet.len() || packet[offset] != expected_type {
+        return false;
+    }
+    let reply_id = u16::from_be_bytes([packet[offset + 4], packet[offset + 5]]);
+    let reply_sequence = u16::from_be_bytes([packet[offset + 6], packet[offset + 7]]);
+    reply_id == id && reply_sequence == sequence && packet[offset + 8..] == *expected_payload
+}
+
 fn send_icmp_echo_raw(
     dest: Ipv4Addr,
     id: u16,
@@ -106,7 +129,12 @@ fn send_icmp_echo_raw(
         return ProtocolResult::Error { reason: e };
     }
 
-    let payload = b"bimap";
+    let payload: &[u8] = match icmp_type {
+        13 => &[0; 12], // RFC 792 timestamp requests carry three 32-bit timestamps.
+        15 => &[],
+        17 => &[0; 4],
+        _ => b"bimap",
+    };
     let packet = build_icmp_echo(icmp_type, id, seq, payload);
 
     let sa = to_sockaddr_in(dest);
@@ -194,11 +222,6 @@ fn send_icmp_echo_raw(
             continue;
         }
 
-        let reply_type = recv_buf[icmp_offset];
-        let reply_id = u16::from_be_bytes([recv_buf[icmp_offset + 4], recv_buf[icmp_offset + 5]]);
-
-        let reply_sequence =
-            u16::from_be_bytes([recv_buf[icmp_offset + 6], recv_buf[icmp_offset + 7]]);
         let expected_type = match icmp_type {
             8 => Some(ICMP_TYPE_ECHO_REPLY),
             13 => Some(14),
@@ -209,10 +232,23 @@ fn send_icmp_echo_raw(
         };
         let source_matches = pnet_packet::ipv4::Ipv4Packet::new(&recv_buf[..n])
             .is_some_and(|packet| packet.get_source() == dest);
-        if expected_type == Some(reply_type)
-            && reply_id == id
-            && reply_sequence == seq
-            && source_matches
+        let expected_payload: &[u8] = match icmp_type {
+            8 => b"bimap",
+            13 => &[0; 12],
+            15 => &[],
+            17 => &[0; 4],
+            _ => &[],
+        };
+        if expected_type.is_some_and(|expected_type| {
+            reply_matches(
+                &recv_buf[..n],
+                icmp_offset,
+                expected_type,
+                id,
+                seq,
+                expected_payload,
+            )
+        }) && source_matches
         {
             unsafe { libc::close(fd) };
             return ProtocolResult::Pass {
@@ -350,7 +386,7 @@ impl TestProtocol for IcmpFullTest {
                 } else {
                     send_icmp_echo_raw(
                         dest,
-                        icmp_type as u16,
+                        next_icmp_id(),
                         idx as u16,
                         icmp_type,
                         per_type_timeout
@@ -480,6 +516,20 @@ mod tests {
                 .to_ne_bytes(),
             [127, 0, 0, 1]
         );
+    }
+
+    #[test]
+    fn icmp_timestamp_request_has_three_timestamp_fields() {
+        let packet = build_icmp_echo(13, 7, 9, &[0; 12]);
+        assert_eq!(packet.len(), 20);
+    }
+
+    #[test]
+    fn icmp_echo_reply_must_match_identifier_sequence_and_payload() {
+        let packet = build_icmp_echo(0, 7, 9, b"bimap");
+        assert!(reply_matches(&packet, 0, 0, 7, 9, b"bimap"));
+        assert!(!reply_matches(&packet, 0, 0, 8, 9, b"bimap"));
+        assert!(!reply_matches(&packet, 0, 0, 7, 9, b"other"));
     }
 
     #[test]

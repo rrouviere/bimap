@@ -16,6 +16,21 @@ fn next_query_id() -> u16 {
     DNS_QUERY_ID.fetch_add(1, Ordering::SeqCst)
 }
 
+fn validate_dns_response(query_bytes: &[u8], response_bytes: &[u8]) -> Result<(), String> {
+    let query = dns::parse_dns_message(query_bytes)?;
+    let response = dns::parse_dns_message(response_bytes)?;
+    if response.message_type() != hickory_proto::op::MessageType::Response {
+        return Err("dns-malformed: not a response".into());
+    }
+    if response.id() != query.id() {
+        return Err("dns-mismatch: transaction ID".into());
+    }
+    if response.queries() != query.queries() || query.queries().is_empty() {
+        return Err("dns-mismatch: question section".into());
+    }
+    Ok(())
+}
+
 async fn dns_udp_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
     let bind_addr = if target.is_ipv4() {
         "0.0.0.0:0"
@@ -67,17 +82,12 @@ async fn dns_udp_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
             receive_timeout.as_millis()
         );
         match tokio::time::timeout(receive_timeout, socket.recv_from(&mut buf)).await {
-            Ok(Ok((n, _addr))) => match dns::parse_dns_message(&buf[..n]) {
-                Ok(response) => {
-                    if response.message_type() == hickory_proto::op::MessageType::Response {
-                        return ProtocolResult::Pass {
-                            sent_bytes: query_len,
-                            received_bytes: n as u64,
-                        };
-                    } else {
-                        last_err = "dns-malformed: not a response".into();
-                        continue;
-                    }
+            Ok(Ok((n, _addr))) => match validate_dns_response(&query_bytes, &buf[..n]) {
+                Ok(()) => {
+                    return ProtocolResult::Pass {
+                        sent_bytes: query_len,
+                        received_bytes: n as u64,
+                    };
                 }
                 Err(e) => {
                     last_err = format!("dns-malformed: {e}");
@@ -221,15 +231,13 @@ async fn dns_tcp_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
         }
     }
 
-    match dns::parse_dns_message(&response_buf) {
-        Ok(response) if response.message_type() == hickory_proto::op::MessageType::Response => {
-            ProtocolResult::Pass {
-                sent_bytes: framed_len,
-                received_bytes: (2 + response_len) as u64,
-            }
-        }
-        _ => ProtocolResult::Fail {
-            reason: "dns-malformed".into(),
+    match validate_dns_response(&query_bytes, &response_buf) {
+        Ok(()) => ProtocolResult::Pass {
+            sent_bytes: framed_len,
+            received_bytes: (2 + response_len) as u64,
+        },
+        Err(error) => ProtocolResult::Fail {
+            reason: error,
             sent_bytes: framed_len,
             received_bytes: (2 + response_len) as u64,
         },
@@ -471,6 +479,7 @@ impl TestProtocol for DnsTest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hickory_proto::serialize::binary::BinEncodable;
 
     #[tokio::test]
     async fn dns_tcp_refused_connection_finishes_within_timeout() {
@@ -524,5 +533,27 @@ mod tests {
             matches!(target_result, ProtocolResult::Pass { .. }),
             "target must receive retried query: {target_result:?}"
         );
+    }
+
+    #[test]
+    fn dns_response_rejects_wrong_transaction_id_and_missing_question() {
+        let query = dns::build_dns_query("bimap.test", 0x1234).expect("query");
+        let parsed_query = dns::parse_dns_message(&query).expect("parse query");
+        let mut wrong_id = dns::build_dns_response(&parsed_query).expect("response");
+        wrong_id[0] ^= 1;
+        assert!(validate_dns_response(&query, &wrong_id)
+            .expect_err("wrong transaction ID")
+            .contains("transaction ID"));
+
+        let mut no_questions =
+            dns::parse_dns_message(&dns::build_dns_response(&parsed_query).expect("response"))
+                .expect("parse response");
+        no_questions.take_queries();
+        let mut bytes = Vec::new();
+        let mut encoder = hickory_proto::serialize::binary::BinEncoder::new(&mut bytes);
+        no_questions.emit(&mut encoder).expect("encode response");
+        assert!(validate_dns_response(&query, &bytes)
+            .expect_err("missing question")
+            .contains("question section"));
     }
 }

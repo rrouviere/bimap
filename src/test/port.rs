@@ -129,6 +129,16 @@ async fn tcp_open_target(addr: SocketAddr, timeout: std::time::Duration) -> Prot
             );
             match tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await {
                 Ok(Ok(_)) => {
+                    if buf[0] != ONE_BYTE_PAYLOAD {
+                        return ProtocolResult::Fail {
+                            reason: format!(
+                                "mismatch: expected 0x{ONE_BYTE_PAYLOAD:02x}, received 0x{:02x}",
+                                buf[0]
+                            ),
+                            sent_bytes: 0,
+                            received_bytes: 1,
+                        };
+                    }
                     debug!(
                         "sending 1 bytes to {}",
                         stream.peer_addr().map_or("?".into(), |a| a.to_string())
@@ -208,13 +218,13 @@ async fn udp_open_initiator(target: SocketAddr, timeout: std::time::Duration) ->
             }
         }
 
-        let mut buf = [0u8; 1];
+        let mut buf = [0u8; 2];
         trace!(
             "udp waiting for response (timeout={}ms)",
             timeout.as_millis()
         );
         match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
-            Ok(Ok((1, _src))) => {
+            Ok(Ok((1, src))) if src == target => {
                 if buf[0] == ONE_BYTE_PAYLOAD {
                     return ProtocolResult::Pass {
                         sent_bytes: 1,
@@ -231,8 +241,12 @@ async fn udp_open_initiator(target: SocketAddr, timeout: std::time::Duration) ->
                     };
                 }
             }
-            Ok(Ok((n, _src))) => {
-                last_err = format!("short recv: {n} bytes");
+            Ok(Ok((n, src))) => {
+                last_err = if src != target {
+                    "recv from unexpected source".into()
+                } else {
+                    format!("recv len: {n} != 1")
+                };
                 continue;
             }
             Ok(Err(e)) => {
@@ -262,7 +276,7 @@ async fn udp_open_target(addr: SocketAddr, timeout: std::time::Duration) -> Prot
         }
     };
 
-    let mut buf = [0u8; 1];
+    let mut buf = [0u8; 2];
     let mut last_err = String::new();
     for _ in 0..5 {
         trace!("udp waiting for response (timeout={}ms)", 1000u64);
@@ -275,14 +289,25 @@ async fn udp_open_target(addr: SocketAddr, timeout: std::time::Duration) -> Prot
             Ok(Ok((n, src))) => {
                 if n != 1 {
                     return ProtocolResult::Fail {
-                        reason: format!("short recv: {n} bytes"),
+                        reason: format!("recv len: {n} != 1"),
                         sent_bytes: 0,
                         received_bytes: 0,
                     };
                 }
 
+                if buf[0] != ONE_BYTE_PAYLOAD {
+                    return ProtocolResult::Fail {
+                        reason: format!(
+                            "mismatch: expected 0x{ONE_BYTE_PAYLOAD:02x}, received 0x{:02x}",
+                            buf[0]
+                        ),
+                        sent_bytes: 0,
+                        received_bytes: 1,
+                    };
+                }
+
                 debug!("udp sending 1 bytes to {}:{}", src.ip(), src.port());
-                match tokio::time::timeout(timeout, socket.send_to(&buf, src)).await {
+                match tokio::time::timeout(timeout, socket.send_to(&buf[..n], src)).await {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => {
                         return ProtocolResult::Fail {
@@ -521,6 +546,14 @@ async fn tcp_1kb_target(addr: SocketAddr, timeout: std::time::Duration) -> Proto
         }
     }
 
+    if buf != kb_payload() {
+        return ProtocolResult::Fail {
+            reason: "mismatch: received payload differs from expected 1kb data".into(),
+            sent_bytes: 0,
+            received_bytes: KB as u64,
+        };
+    }
+
     debug!(
         "sending {} bytes to {}",
         buf.len(),
@@ -591,13 +624,13 @@ async fn udp_1kb_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
             }
         }
 
-        let mut buf = vec![0u8; KB];
+        let mut buf = vec![0u8; KB + 1];
         trace!(
             "udp waiting for response (timeout={}ms)",
             timeout.as_millis()
         );
         match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
-            Ok(Ok((n, _src))) => {
+            Ok(Ok((n, src))) if src == target => {
                 if n != KB {
                     return ProtocolResult::Fail {
                         reason: format!("recv len: {n} != {KB}"),
@@ -618,6 +651,10 @@ async fn udp_1kb_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
                         received_bytes: KB as u64,
                     };
                 }
+            }
+            Ok(Ok((_n, _src))) => {
+                last_err = "recv from unexpected source".into();
+                continue;
             }
             Ok(Err(e)) => {
                 last_err = format!("recv: {e}");
@@ -646,7 +683,7 @@ async fn udp_1kb_target(addr: SocketAddr, timeout: std::time::Duration) -> Proto
         }
     };
 
-    let mut buf = vec![0u8; KB];
+    let mut buf = vec![0u8; KB + 1];
     let mut last_err = String::new();
     for _ in 0..5 {
         trace!("udp waiting for response (timeout={}ms)", 1000u64);
@@ -660,6 +697,14 @@ async fn udp_1kb_target(addr: SocketAddr, timeout: std::time::Duration) -> Proto
                 if n != KB {
                     return ProtocolResult::Fail {
                         reason: format!("recv len: {n} != {KB}"),
+                        sent_bytes: 0,
+                        received_bytes: n as u64,
+                    };
+                }
+
+                if buf[..n] != kb_payload() {
+                    return ProtocolResult::Fail {
+                        reason: "mismatch: received payload differs from expected 1kb data".into(),
                         sent_bytes: 0,
                         received_bytes: n as u64,
                     };
@@ -728,5 +773,92 @@ impl TestProtocol for KbTest {
                 reason: "ICMP not supported by 1kb test".into(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn tcp_open_target_rejects_payload_changed_in_transit() {
+        let reservation = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve port");
+        let address = reservation.local_addr().expect("local address");
+        drop(reservation);
+
+        let target = tokio::spawn(tcp_open_target(address, std::time::Duration::from_secs(1)));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut client = TcpStream::connect(address).await.expect("connect");
+        client
+            .write_all(&[ONE_BYTE_PAYLOAD ^ 0xff])
+            .await
+            .expect("send altered payload");
+
+        assert!(matches!(
+            target.await.expect("target task"),
+            ProtocolResult::Fail { ref reason, .. } if reason.contains("mismatch")
+        ));
+    }
+
+    #[tokio::test]
+    async fn udp_open_initiator_rejects_reply_from_wrong_source() {
+        let expected = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind expected endpoint");
+        let target = expected.local_addr().expect("expected address");
+        let unexpected = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind unexpected endpoint");
+        let responder = tokio::spawn(async move {
+            let mut request = [0u8; 2];
+            loop {
+                let (_, source) = expected
+                    .recv_from(&mut request)
+                    .await
+                    .expect("receive request");
+                unexpected
+                    .send_to(&[ONE_BYTE_PAYLOAD], source)
+                    .await
+                    .expect("send spoofed response");
+            }
+        });
+
+        let result = udp_open_initiator(target, std::time::Duration::from_millis(20)).await;
+        responder.abort();
+        assert!(matches!(
+            result,
+            ProtocolResult::Fail { ref reason, .. } if reason.contains("unexpected source")
+        ));
+    }
+
+    #[tokio::test]
+    async fn udp_1kb_initiator_rejects_oversized_reply() {
+        let responder = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind responder");
+        let target = responder.local_addr().expect("responder address");
+        let responder = tokio::spawn(async move {
+            let mut request = vec![0u8; KB + 1];
+            loop {
+                let (_, source) = responder
+                    .recv_from(&mut request)
+                    .await
+                    .expect("receive request");
+                responder
+                    .send_to(&vec![0xAA; KB + 1], source)
+                    .await
+                    .expect("send oversized response");
+            }
+        });
+
+        let result = udp_1kb_initiator(target, std::time::Duration::from_millis(50)).await;
+        responder.abort();
+        assert!(matches!(
+            result,
+            ProtocolResult::Fail { ref reason, .. } if reason.contains("recv len")
+        ));
     }
 }
