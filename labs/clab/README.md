@@ -52,7 +52,7 @@ the lab if it deployed it. Pass a path to save a separate recording:
 ./labs/clab/demo-record.sh /tmp/bimap-demo.cast
 ```
 
-The [published recording](https://asciinema.org/a/shhMhmQpoVMeILZ5) is a real
+The [published recording](https://asciinema.org/a/MqxnpuVBERsXnZVR) is a real
 terminal capture of the tmux session; the local copy is `labs/clab/demo.cast`.
 
 ## Firewall policy

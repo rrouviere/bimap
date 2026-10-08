@@ -132,19 +132,14 @@ drive_demo() {
   fi
 
   sleep 2
-  tmux send-keys -t "$client_pane" \
-    'printf "\\n  POLICY FOUND  ·  tcp/22 + tcp/80 reachable\\n"'
-  tmux send-keys -t "$client_pane" C-m
   tmux send-keys -t "$firewall_pane" C-u
   tmux send-keys -t "$firewall_pane" \
-    'clear; printf "  LIVE FIREWALL RULES  ·  counters after the scan\\n\\n"; nft -a list chain inet bimap forward_chain'
+    'clear; nft -a list chain inet bimap forward_chain'
   tmux send-keys -t "$firewall_pane" C-m
   sleep 3
   tmux send-keys -t "$target_pane" C-c
   sleep 0.5
-  tmux display-message -t "$session" 'Scan complete  ·  discovered TCP 22 and 80'
-  sleep 2
-  tmux kill-session -t "$session"
+  tmux detach-client -s "$session"
 }
 
 (
@@ -157,7 +152,7 @@ DRIVER_PID=$!
 echo "Recording a live client | firewall | target scan to $CAST"
 TERM=xterm-256color asciinema rec --overwrite --quiet --cols 240 --rows 44 \
   --title 'bimap · firewall policy discovery in Containerlab' \
-  -c "TERM=xterm-256color tmux attach-session -t $SESSION; printf '\\033[2J\\033[18;78H\\033[38;2;45;212;191m╭──────────────────────────────────────────────────────────────╮\\033[19;78H│  BIMAP  /  FIREWALL POLICY DISCOVERED                        │\\033[20;78H│  TCP 22  ALLOWED    ·    TCP 80  ALLOWED                      │\\033[21;78H│  100 ports scanned  ·  98 filtered  ·  2 reachable           │\\033[22;78H│  client ───────── firewall ───────── target                    │\\033[23;78H╰──────────────────────────────────────────────────────────────╯\\033[0m'" "$CAST"
+  -c "TERM=xterm-256color tmux attach-session -t $SESSION" "$CAST"
 wait "$DRIVER_PID"
 DRIVER_PID=""
 
