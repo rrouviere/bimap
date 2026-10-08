@@ -52,10 +52,10 @@ the lab if it deployed it. Pass a path to save a separate recording:
 ./labs/clab/demo-record.sh /tmp/bimap-demo.cast
 ```
 
-<script async id="asciicast-MqxnpuVBERsXnZVR" src="https://asciinema.org/a/MqxnpuVBERsXnZVR.js"></script>
+[![Play the bimap demo](https://asciinema.org/a/MqxnpuVBERsXnZVR.svg)](https://asciinema.org/a/MqxnpuVBERsXnZVR)
 
-This player shows the published terminal recording. The local copy is
-`labs/clab/demo.cast`.
+The preview opens the published recording in asciinema's player. The local
+copy is `labs/clab/demo.cast`.
 
 ## Firewall policy
 
