@@ -15,6 +15,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TOPO="$SCRIPT_DIR/bimap.clab.yml"
+LAB_DEPLOYED=0
+
+cleanup() {
+  if [[ "$LAB_DEPLOYED" == 1 ]]; then
+    containerlab destroy -t "$TOPO" 2>&1 | tail -3 || true
+  fi
+}
+trap cleanup EXIT
 
 SERVER_CONTAINER=server
 CLIENT_CONTAINER=client
@@ -27,6 +35,7 @@ section() { echo; bold "$*"; }
 # ── Deploy lab ──────────────────────────────────────────────────────────
 bold "Deploying containerlab lab..."
 containerlab destroy -t "$TOPO" 2>&1 | tail -3 || true
+LAB_DEPLOYED=1
 containerlab deploy -t "$TOPO" 2>&1 | tail -5
 sleep 2
 
@@ -73,4 +82,5 @@ fi
 
 section "Tear down"
 containerlab destroy -t "$TOPO" 2>&1 | tail -3
+LAB_DEPLOYED=0
 echo "Done."

@@ -15,7 +15,7 @@
 # tcp/22 and tcp/80 pass; every other port hits the policy drop.
 #
 # Implementation notes:
-#   - debian:12-slim ships without `ip` and `nft`, so each container's first
+#   - debian:trixie-slim ships without `ip` and `nft`, so each container's first
 #     exec lines install iproute2 (and nftables on the firewall).
 #   - The nftables ruleset lives in firewall.nft (beside this file) and is
 #     bind-mounted into the firewall container, then loaded with
@@ -34,7 +34,7 @@ topology:
 
   nodes:
     server:
-      image: debian:12-slim
+      image: debian:trixie-slim
       binds:
         - ../../target/release/bimap:/usr/local/bin/bimap:ro
       exec:
@@ -45,7 +45,7 @@ topology:
         - ip route replace default via 10.0.1.1
 
     client:
-      image: debian:12-slim
+      image: debian:trixie-slim
       binds:
         - ../../target/release/bimap:/usr/local/bin/bimap:ro
       exec:
@@ -56,7 +56,7 @@ topology:
         - ip route replace default via 10.0.0.1
 
     firewall:
-      image: debian:12-slim
+      image: debian:trixie-slim
       cap-add: [NET_ADMIN]
       sysctls:
         net.ipv4.ip_forward: 1

@@ -8,6 +8,8 @@ This is a current limitation.
 
 <a href="https://asciinema.org/a/BMMyEkpRd3IIh0Ez"><img src="https://asciinema.org/a/BMMyEkpRd3IIh0Ez.svg" alt="bimap demo: discovering firewall policies with a forward scan" width="100%" /></a>
 
+Latest local recording: [labs/clab/demo.cast](labs/clab/demo.cast).
+
 ## Features
 Bimap is composed of tests suites. Each test has a client and server component and the result is checked over the control connection
 
