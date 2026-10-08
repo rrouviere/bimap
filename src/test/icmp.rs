@@ -92,14 +92,19 @@ fn reply_matches(
     expected_type: u8,
     id: u16,
     sequence: u16,
-    expected_payload: &[u8],
+    expected_payload: Option<&[u8]>,
+    minimum_payload_len: usize,
 ) -> bool {
     if offset + 8 > packet.len() || packet[offset] != expected_type {
         return false;
     }
     let reply_id = u16::from_be_bytes([packet[offset + 4], packet[offset + 5]]);
     let reply_sequence = u16::from_be_bytes([packet[offset + 6], packet[offset + 7]]);
-    reply_id == id && reply_sequence == sequence && packet[offset + 8..] == *expected_payload
+    let payload = &packet[offset + 8..];
+    reply_id == id
+        && reply_sequence == sequence
+        && payload.len() >= minimum_payload_len
+        && expected_payload.is_none_or(|expected| payload == expected)
 }
 
 fn send_icmp_echo_raw(
@@ -232,12 +237,12 @@ fn send_icmp_echo_raw(
         };
         let source_matches = pnet_packet::ipv4::Ipv4Packet::new(&recv_buf[..n])
             .is_some_and(|packet| packet.get_source() == dest);
-        let expected_payload: &[u8] = match icmp_type {
-            8 => b"bimap",
-            13 => &[0; 12],
-            15 => &[],
-            17 => &[0; 4],
-            _ => &[],
+        let (expected_payload, minimum_payload_len): (Option<&[u8]>, usize) = match icmp_type {
+            8 => (Some(b"bimap"), 5),
+            13 => (None, 12),
+            15 => (None, 0),
+            17 => (None, 4),
+            _ => (None, 0),
         };
         if expected_type.is_some_and(|expected_type| {
             reply_matches(
@@ -247,6 +252,7 @@ fn send_icmp_echo_raw(
                 id,
                 seq,
                 expected_payload,
+                minimum_payload_len,
             )
         }) && source_matches
         {
@@ -527,9 +533,16 @@ mod tests {
     #[test]
     fn icmp_echo_reply_must_match_identifier_sequence_and_payload() {
         let packet = build_icmp_echo(0, 7, 9, b"bimap");
-        assert!(reply_matches(&packet, 0, 0, 7, 9, b"bimap"));
-        assert!(!reply_matches(&packet, 0, 0, 8, 9, b"bimap"));
-        assert!(!reply_matches(&packet, 0, 0, 7, 9, b"other"));
+        assert!(reply_matches(&packet, 0, 0, 7, 9, Some(b"bimap"), 5));
+        assert!(!reply_matches(&packet, 0, 0, 8, 9, Some(b"bimap"), 5));
+        assert!(!reply_matches(&packet, 0, 0, 7, 9, Some(b"other"), 5));
+    }
+
+    #[test]
+    fn icmp_timestamp_reply_accepts_generated_values_but_requires_full_fields() {
+        let packet = build_icmp_echo(14, 7, 9, &[1; 12]);
+        assert!(reply_matches(&packet, 0, 14, 7, 9, None, 12));
+        assert!(!reply_matches(&packet[..19], 0, 14, 7, 9, None, 12));
     }
 
     #[test]
