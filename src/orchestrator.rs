@@ -69,7 +69,7 @@ pub async fn run_server(
     mut channel: ControlChannel,
     registry: &TestRegistry,
 ) -> Result<TestSummary, String> {
-    let client_ip = channel.peer_addr()?.ip();
+    let client_addr = channel.peer_addr()?;
     let (timeout_ms, parallel, test_bind_ip) = match channel.recv().await? {
         Message::Configure {
             target,
@@ -89,14 +89,14 @@ pub async fn run_server(
                     .await?;
                 return Err("client version too old, update client".into());
             }
-            let bind_ip: Option<IpAddr> = target.as_ref().and_then(|t| t.parse().ok());
+            let bind_addr = target.as_deref().and_then(parse_configured_bind_addr);
             channel
                 .send(&Message::Ack {
                     ok: true,
                     message: None,
                 })
                 .await?;
-            (timeout_ms, parallel, bind_ip)
+            (timeout_ms, parallel, bind_addr)
         }
         _ => return Err("expected Configure message".into()),
     };
@@ -108,7 +108,7 @@ pub async fn run_server(
     loop {
         // Read first message: must be Test or Done
         let first = channel.recv().await?;
-        let (proto, mut batch, mut done_after) = match first {
+        let (mut batch, mut done_after) = match first {
             Message::Done => break,
             Message::Test {
                 id,
@@ -127,23 +127,21 @@ pub async fn run_server(
                     Direction::ClientToServer => Direction::ServerToClient,
                     Direction::ServerToClient => Direction::ClientToServer,
                 };
-                let bind_ip = test_bind_ip.unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
-                let target_addr = SocketAddr::new(
-                    if server_dir == Direction::ClientToServer {
-                        client_ip
-                    } else {
-                        bind_ip
-                    },
-                    port,
-                );
+                let mut target_addr = if server_dir == Direction::ClientToServer {
+                    client_addr
+                } else {
+                    test_bind_ip.unwrap_or(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
+                };
+                target_addr.set_port(port);
                 let batch = vec![ServerBatchEntry {
                     id,
+                    proto,
                     transport,
                     dir: server_dir,
                     port,
                     target_addr,
                 }];
-                (proto, batch, false)
+                (batch, false)
             }
             _ => return Err("unexpected message, expected Test or Done".into()),
         };
@@ -156,29 +154,31 @@ pub async fn run_server(
             match tokio::time::timeout(Duration::from_millis(10), channel.recv()).await {
                 Ok(Ok(Message::Test {
                     id,
-                    protocol: _,
+                    protocol,
                     transport,
                     port,
                     direction,
                 })) => {
                     let transport = Transport::from_str(&transport)
                         .ok_or_else(|| format!("unknown transport: {transport}"))?;
+                    let proto = registry
+                        .find(&protocol)
+                        .ok_or_else(|| format!("unknown protocol: {protocol}"))?;
                     let dir = parse_direction(&direction)?;
                     let server_dir = match dir {
                         Direction::ClientToServer => Direction::ServerToClient,
                         Direction::ServerToClient => Direction::ClientToServer,
                     };
-                    let bind_ip = test_bind_ip.unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
-                    let target_addr = SocketAddr::new(
-                        if server_dir == Direction::ClientToServer {
-                            client_ip
-                        } else {
-                            bind_ip
-                        },
-                        port,
-                    );
+                    let mut target_addr = if server_dir == Direction::ClientToServer {
+                        client_addr
+                    } else {
+                        test_bind_ip
+                            .unwrap_or(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
+                    };
+                    target_addr.set_port(port);
                     batch.push(ServerBatchEntry {
                         id,
+                        proto,
                         transport,
                         dir: server_dir,
                         port,
@@ -206,7 +206,7 @@ pub async fn run_server(
                     target_addr: entry.target_addr,
                     timeout: Duration::from_millis(timeout_ms),
                 };
-                Box::pin(async move { (entry.id, run_protocol(proto, ctx).await) })
+                Box::pin(async move { (entry.id, run_protocol(entry.proto, ctx).await) })
             })
             .collect();
 
@@ -257,8 +257,7 @@ pub struct ClientConfig {
     pub timeout_ms: u64,
     pub parallel: usize,
     pub server_addr: IpAddr,
-    pub target_str: String,
-    pub target_ip: IpAddr,
+    pub target_addr: SocketAddr,
     pub json: bool,
     pub json_export: bool,
     pub verbose: u8,
@@ -274,8 +273,9 @@ struct BatchEntry<'a> {
     direction: Direction,
 }
 
-struct ServerBatchEntry {
+struct ServerBatchEntry<'a> {
     id: u32,
+    proto: &'a dyn TestProtocol,
     transport: Transport,
     dir: Direction,
     port: u16,
@@ -305,18 +305,16 @@ async fn execute_batch(
             .await?;
     }
 
-    let local_ip = channel.local_addr()?.ip();
+    let local_addr = channel.local_addr()?;
     let mut unordered: FuturesUnordered<_> = batch
         .iter()
         .map(|entry| {
-            let target_addr = SocketAddr::new(
-                if entry.direction == Direction::ServerToClient {
-                    local_ip
-                } else {
-                    config.target_ip
-                },
-                entry.port,
-            );
+            let mut target_addr = if entry.direction == Direction::ServerToClient {
+                local_addr
+            } else {
+                config.target_addr
+            };
+            target_addr.set_port(entry.port);
             let ctx = TestContext {
                 direction: entry.direction,
                 transport: entry.transport,
@@ -377,7 +375,12 @@ async fn execute_batch(
         }
     }
 
-    let interactive = is_interactive() && !config.json && !config.json_export;
+    let interactive = should_render_interactive(
+        is_interactive(),
+        config.quiet,
+        config.json,
+        config.json_export,
+    );
     let mut fail_map: HashMap<(String, String, String, String), Vec<u16>> = HashMap::new();
     let mut pass_map: HashMap<(String, String, String), Vec<u16>> = HashMap::new();
     for entry in batch {
@@ -521,6 +524,8 @@ pub async fn run_client(
 ) -> Result<TestSummary, String> {
     let mut port_ranges = config.port_ranges.clone();
 
+    validate_port_ranges(&port_ranges)?;
+
     for test_name in &config.tests {
         let Some(proto) = registry.find(test_name) else {
             return Err(format!("unknown protocol: {test_name}"));
@@ -562,7 +567,7 @@ pub async fn run_client(
             tests: config.tests.to_vec(),
             port_ranges: port_range_specs,
             bidir: config.bidir,
-            target: Some(config.target_str.clone()),
+            target: Some(config.target_addr.to_string()),
             timeout_ms: config.timeout_ms,
             client_version: PROTOCOL_VERSION,
             parallel: config.parallel,
@@ -683,6 +688,26 @@ fn parse_direction(s: &str) -> Result<Direction, String> {
         "<-" => Ok(Direction::ServerToClient),
         _ => Err(format!("unknown direction: {s}")),
     }
+}
+
+fn parse_configured_bind_addr(value: &str) -> Option<SocketAddr> {
+    value.parse::<SocketAddr>().ok().or_else(|| {
+        value
+            .parse::<IpAddr>()
+            .ok()
+            .map(|ip| SocketAddr::new(ip, 0))
+    })
+}
+
+fn validate_port_ranges(port_ranges: &[(String, u16, u16)]) -> Result<(), String> {
+    if port_ranges.iter().any(|(_, start, end)| start > end) {
+        return Err("invalid port range: start must not exceed end".into());
+    }
+    Ok(())
+}
+
+fn should_render_interactive(terminal: bool, quiet: bool, json: bool, json_export: bool) -> bool {
+    terminal && !quiet && !json && !json_export
 }
 
 /// Build the consolidated PASS port-range lines to print once the live
@@ -958,6 +983,29 @@ mod tests {
     #[test]
     fn parse_direction_invalid() {
         assert!(parse_direction("invalid").is_err());
+    }
+
+    #[test]
+    fn descending_programmatic_port_range_is_rejected() {
+        let ranges = vec![("tcp".into(), 20, 10)];
+        assert!(validate_port_ranges(&ranges)
+            .expect_err("descending range")
+            .contains("start must not exceed end"));
+    }
+
+    #[test]
+    fn quiet_mode_disables_interactive_pass_output() {
+        assert!(!should_render_interactive(true, true, false, false));
+        assert!(should_render_interactive(true, false, false, false));
+    }
+
+    #[test]
+    fn configured_ipv6_bind_address_keeps_its_scope_id() {
+        let mut address = parse_configured_bind_addr("[fe80::1%2]:0").expect("scoped address");
+        address.set_port(8080);
+        assert!(
+            matches!(address, SocketAddr::V6(address) if address.scope_id() == 2 && address.port() == 8080)
+        );
     }
 
     #[test]

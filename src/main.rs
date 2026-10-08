@@ -1,7 +1,7 @@
 use bimap::cli::{parse, parse_port_ranges, Command};
 use bimap::control::msg::Message;
 use bimap::output;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::process;
 use tracing::{debug, error, info};
 
@@ -129,36 +129,31 @@ fn main() {
                 verbose,
                 quiet,
             } => {
-                let (server, port) = if let Some(ref cs) = control_server {
-                    let sock_addr: SocketAddr = match cs.parse() {
-                        Ok(a) => a,
+                let control_target = if let Some(ref cs) = control_server {
+                    match cs.parse::<SocketAddr>() {
+                        Ok(address) => address,
                         Err(_) => {
                             error!("--control-server must be ip:port (IPv6: [::1]:443)");
                             return 2;
                         }
-                    };
-                    (sock_addr.ip(), sock_addr.port())
+                    }
                 } else {
                     match server {
-                        Some(ref s) => {
-                            let s = strip_ipv6_brackets(s);
-                            let ip: IpAddr = match s.parse() {
-                                Ok(ip) => ip,
-                                Err(_) => match (s, port).to_socket_addrs() {
-                                    Ok(mut addrs) => match addrs.next() {
-                                        Some(a) => a.ip(),
-                                        None => {
-                                            error!("could not resolve server '{s}'");
-                                            return 2;
-                                        }
-                                    },
-                                    Err(e) => {
-                                        error!("could not resolve server '{s}': {e}");
+                        Some(ref hostname) => {
+                            let hostname = strip_ipv6_brackets(hostname);
+                            match (hostname, port).to_socket_addrs() {
+                                Ok(mut addresses) => match addresses.next() {
+                                    Some(address) => address,
+                                    None => {
+                                        error!("could not resolve server '{hostname}'");
                                         return 2;
                                     }
                                 },
-                            };
-                            (ip, port)
+                                Err(error) => {
+                                    error!("could not resolve server '{hostname}': {error}");
+                                    return 2;
+                                }
+                            }
                         }
                         None => {
                             error!("--server or --control-server is required");
@@ -166,24 +161,26 @@ fn main() {
                         }
                     }
                 };
-                let target_str = target.unwrap_or_else(|| server.to_string());
-                let target_ip: IpAddr = {
-                    let s = strip_ipv6_brackets(&target_str);
-                    match s.parse() {
-                        Ok(ip) => ip,
-                        Err(_) => match (s, 0).to_socket_addrs() {
-                            Ok(mut addrs) => match addrs.next() {
-                                Some(a) => a.ip(),
-                                None => {
-                                    error!("could not resolve '{target_str}': no addresses");
-                                    return 2;
-                                }
-                            },
-                            Err(e) => {
-                                error!("could not resolve '{target_str}': {e}");
+                let explicit_target = target.is_some();
+                let target_str = target.unwrap_or_else(|| control_target.ip().to_string());
+                let target_addr: SocketAddr = if !explicit_target {
+                    let mut address = control_target;
+                    address.set_port(0);
+                    address
+                } else {
+                    let hostname = strip_ipv6_brackets(&target_str);
+                    match (hostname, 0).to_socket_addrs() {
+                        Ok(mut addresses) => match addresses.next() {
+                            Some(address) => address,
+                            None => {
+                                error!("could not resolve '{target_str}': no addresses");
                                 return 2;
                             }
                         },
+                        Err(error) => {
+                            error!("could not resolve '{target_str}': {error}");
+                            return 2;
+                        }
                     }
                 };
                 use bimap::control::channel_from_client_tls;
@@ -244,7 +241,6 @@ fn main() {
                     }
                 };
 
-                let control_target = SocketAddr::new(server, port);
                 let tls_stream = match client_tls_connect(&connector, control_target).await {
                     Ok(s) => s,
                     Err(e) => {
@@ -282,9 +278,8 @@ fn main() {
                     bidir,
                     timeout_ms: timeout,
                     parallel,
-                    server_addr: server,
-                    target_str,
-                    target_ip,
+                    server_addr: control_target.ip(),
+                    target_addr,
                     json,
                     json_export,
                     verbose,

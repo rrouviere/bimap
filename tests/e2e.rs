@@ -322,6 +322,8 @@ fn server_and_client_with_hostnames_e2e() {
             "localhost",
             "--port",
             &E2E_HOSTNAME_SERVER_PORT.to_string(),
+            "--target",
+            "localhost",
             "--test",
             "open",
             "--port-range",

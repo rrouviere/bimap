@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use bimap::control::tls::{
     client_tls_connect, generate_ephemeral_cert, make_tls_acceptor, make_tls_connector,
     server_tls_accept,
@@ -6,7 +7,8 @@ use bimap::control::{
     channel_from_client_tls, channel_from_tls_stream, msg::Message, ControlChannel,
 };
 use bimap::orchestrator;
-use bimap::test::build_registry;
+use bimap::orchestrator::ProtocolResult;
+use bimap::test::{build_registry, Layer, TestContext, TestProtocol, TestRegistry, Transport};
 use tokio::net::TcpListener;
 
 async fn setup_both_channels(port: u16) -> (ControlChannel, ControlChannel, String) {
@@ -124,8 +126,7 @@ async fn full_open_test_loopback() {
         timeout_ms: 5000,
         parallel: 1,
         server_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-        target_str: "127.0.0.1".to_string(),
-        target_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr: "127.0.0.1:0".parse().expect("target address"),
         json: false,
         json_export: false,
         verbose: 0,
@@ -186,4 +187,100 @@ async fn server_rejects_unknown_protocol() {
 
     let result = server_handle.await.expect("server join");
     assert!(result.is_ok(), "server should complete without error");
+}
+
+struct MarkedPass {
+    name: &'static str,
+    marker: u64,
+}
+
+#[async_trait]
+impl TestProtocol for MarkedPass {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn layer(&self) -> Layer {
+        Layer::L4
+    }
+
+    fn transports(&self) -> &[Transport] {
+        &[Transport::Tcp]
+    }
+
+    async fn run(&self, _context: TestContext) -> ProtocolResult {
+        ProtocolResult::Pass {
+            sent_bytes: self.marker,
+            received_bytes: 0,
+        }
+    }
+}
+
+#[tokio::test]
+async fn server_runs_the_protocol_named_by_each_batched_test() {
+    let (server, mut client, _) = setup_both_channels(16012).await;
+    let mut registry = TestRegistry::new();
+    registry.register(Box::new(MarkedPass {
+        name: "alpha",
+        marker: 11,
+    }));
+    registry.register(Box::new(MarkedPass {
+        name: "beta",
+        marker: 22,
+    }));
+    let server_task =
+        tokio::spawn(async move { orchestrator::run_server(server, &registry).await });
+
+    client
+        .send(&Message::Configure {
+            tests: vec!["alpha".into(), "beta".into()],
+            port_ranges: vec![],
+            bidir: false,
+            target: Some("127.0.0.1:0".into()),
+            timeout_ms: 500,
+            client_version: bimap::control::msg::PROTOCOL_VERSION,
+            parallel: 2,
+        })
+        .await
+        .expect("send configure");
+    assert!(matches!(
+        client.recv().await.expect("ack"),
+        Message::Ack { ok: true, .. }
+    ));
+
+    for (id, protocol) in [(1, "alpha"), (2, "beta")] {
+        client
+            .send(&Message::Test {
+                id,
+                protocol: protocol.into(),
+                transport: "tcp".into(),
+                port: 0,
+                direction: "->".into(),
+            })
+            .await
+            .expect("send test");
+    }
+    client.send(&Message::Done).await.expect("send done");
+
+    let mut reports = std::collections::HashMap::new();
+    for _ in 0..2 {
+        if let Message::Report {
+            id,
+            sent: Some(report),
+            ..
+        } = client.recv().await.expect("report")
+        {
+            reports.insert(id, report.bytes);
+        }
+    }
+    assert_eq!(reports.get(&1), Some(&11));
+    assert_eq!(reports.get(&2), Some(&22));
+    assert!(matches!(
+        client.recv().await.expect("bye"),
+        Message::Bye { .. }
+    ));
+    server_task
+        .await
+        .expect("server task")
+        .expect("server result");
 }

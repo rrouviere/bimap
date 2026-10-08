@@ -127,8 +127,7 @@ fn mock_config() -> ClientConfig {
         timeout_ms: 100,
         parallel: 4,
         server_addr: "127.0.0.1".parse().expect("IP"),
-        target_str: "127.0.0.1".into(),
-        target_ip: "127.0.0.1".parse().expect("IP"),
+        target_addr: "127.0.0.1:0".parse().expect("target address"),
         json: false,
         json_export: true,
         verbose: 0,
@@ -304,14 +303,13 @@ async fn open_tcp_reverse_context_uses_control_client_address() {
     client_registry.register(Box::new(RecordAddress(client_addresses.clone())));
     let mut config = mock_config();
     config.bidir = true;
-    config.target_str = "127.0.0.2".into();
-    config.target_ip = "127.0.0.2".parse().expect("target IP");
+    config.target_addr = "127.0.0.2:0".parse().expect("target address");
     run_client(client, &client_registry, &config)
         .await
         .expect("run client");
     server_task.await.expect("server task").expect("run server");
     let client_ip: std::net::IpAddr = "127.0.0.1".parse().expect("client IP");
-    let target_ip = config.target_ip;
+    let target_ip = config.target_addr.ip();
     assert_eq!(
         *client_addresses.lock().expect("client addresses"),
         vec![
