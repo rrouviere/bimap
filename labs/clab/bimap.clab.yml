@@ -1,17 +1,17 @@
 # Bimap stateful-firewall demo.
-# Brings up two Linux hosts (client, server) and a Linux middlebox (firewall)
+# Brings up two Linux hosts (client, target) and a Linux middlebox (firewall)
 # running nftables, wired point-to-point so all bimap traffic crosses the
 # middlebox.  The firewall uses stateful conntrack with a per-port allowlist:
-# only tcp/{22,80,443,8080} is allowed client→server; server→client allows
+# only tcp/{22,80,443,8080} is allowed client→target; target→client allows
 # all TCP.  The control channel (tcp/4242) is exempted.
 #
 # Topology:
 #
 #   10.0.0.0/24                        10.0.1.0/24
-#   client:eth1 ──── firewall:eth1      firewall:eth2 ──── server:eth1
+#   client:eth1 ──── firewall:eth1      firewall:eth2 ──── target:eth1
 #   10.0.0.2/24      10.0.0.1/24        10.0.1.1/24        10.0.1.2/24
 #
-# A bimap forward scan (client→server, ports 1-200) reveals that only
+# A bimap forward scan (client→target, ports 1-100) reveals that only
 # tcp/22 and tcp/80 pass; every other port hits the policy drop.
 #
 # Implementation notes:
@@ -22,7 +22,7 @@
 #     `nft -f /etc/bimap/firewall.nft`.
 
 name: bimap
-prefix: ""                         # short container names: server, client, firewall
+prefix: ""                         # short container names: target, client, firewall
 
 mgmt:
   network: clab-bimap-mgmt        # only for `docker exec`; datapath uses veth subnets
@@ -33,7 +33,7 @@ topology:
     kind: linux
 
   nodes:
-    server:
+    target:
       image: debian:trixie-slim
       binds:
         - ../../target/release/bimap:/usr/local/bin/bimap:ro
@@ -73,4 +73,4 @@ topology:
 
   links:
     - endpoints: ["client:eth1",   "firewall:eth1"]
-    - endpoints: ["firewall:eth2",  "server:eth1"]
+    - endpoints: ["firewall:eth2",  "target:eth1"]
