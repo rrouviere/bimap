@@ -42,27 +42,31 @@ async fn dns_udp_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
     };
     let query_len = query_bytes.len() as u64;
 
+    let receive_timeout = (timeout / 5).min(std::time::Duration::from_millis(200));
     let mut last_err = String::new();
     for attempt in 0..5 {
         if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         debug!("dns sending query to {}:{}", target.ip(), target.port());
-        if let Err(e) = tokio::time::timeout(timeout, socket.send_to(&query_bytes, target)).await {
-            last_err = format!("send timeout: {e}");
-            continue;
-        }
-        if let Err(e) = socket.send_to(&query_bytes, target).await {
-            last_err = format!("send: {e}");
-            continue;
+        match tokio::time::timeout(timeout, socket.send_to(&query_bytes, target)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                last_err = format!("send: {error}");
+                continue;
+            }
+            Err(error) => {
+                last_err = format!("send timeout: {error}");
+                continue;
+            }
         }
 
         let mut buf = [0u8; 1500];
         trace!(
             "dns waiting for response (timeout={}ms)",
-            timeout.as_millis()
+            receive_timeout.as_millis()
         );
-        match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
+        match tokio::time::timeout(receive_timeout, socket.recv_from(&mut buf)).await {
             Ok(Ok((n, _addr))) => match dns::parse_dns_message(&buf[..n]) {
                 Ok(response) => {
                     if response.message_type() == hickory_proto::op::MessageType::Response {
@@ -434,18 +438,91 @@ impl TestProtocol for DnsTest {
     }
 
     async fn run(&self, ctx: TestContext) -> ProtocolResult {
-        match ctx.transport {
-            Transport::Tcp => match ctx.direction {
-                Direction::ClientToServer => dns_tcp_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => dns_tcp_target(ctx.target_addr, ctx.timeout).await,
-            },
-            Transport::Udp => match ctx.direction {
-                Direction::ClientToServer => dns_udp_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => dns_udp_target(ctx.target_addr, ctx.timeout).await,
-            },
-            Transport::Icmp => ProtocolResult::Error {
-                reason: "ICMP not supported by DNS test".into(),
+        let operation = async {
+            match ctx.transport {
+                Transport::Tcp => match ctx.direction {
+                    Direction::ClientToServer => {
+                        dns_tcp_initiator(ctx.target_addr, ctx.timeout).await
+                    }
+                    Direction::ServerToClient => dns_tcp_target(ctx.target_addr, ctx.timeout).await,
+                },
+                Transport::Udp => match ctx.direction {
+                    Direction::ClientToServer => {
+                        dns_udp_initiator(ctx.target_addr, ctx.timeout).await
+                    }
+                    Direction::ServerToClient => dns_udp_target(ctx.target_addr, ctx.timeout).await,
+                },
+                Transport::Icmp => ProtocolResult::Error {
+                    reason: "ICMP not supported by DNS test".into(),
+                },
+            }
+        };
+        match tokio::time::timeout(ctx.timeout, operation).await {
+            Ok(result) => result,
+            Err(_) => ProtocolResult::Fail {
+                reason: "timeout".into(),
+                sent_bytes: 0,
+                received_bytes: 0,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dns_tcp_refused_connection_finishes_within_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        drop(listener);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            DnsTest.run(TestContext {
+                direction: Direction::ClientToServer,
+                transport: Transport::Tcp,
+                port: address.port(),
+                target_addr: address,
+                timeout: std::time::Duration::from_millis(50),
+            }),
+        )
+        .await
+        .expect("DNS deadline must bound refused connections");
+        assert!(matches!(result, ProtocolResult::Fail { .. }));
+    }
+    #[tokio::test]
+    async fn dns_udp_delayed_listener_retries_and_passes() {
+        let address: SocketAddr = "127.0.0.1:18640".parse().expect("address");
+        let responder = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            DnsTest
+                .run(TestContext {
+                    direction: Direction::ServerToClient,
+                    transport: Transport::Udp,
+                    port: address.port(),
+                    target_addr: address,
+                    timeout: std::time::Duration::from_millis(500),
+                })
+                .await
+        });
+        let result = DnsTest
+            .run(TestContext {
+                direction: Direction::ClientToServer,
+                transport: Transport::Udp,
+                port: address.port(),
+                target_addr: address,
+                timeout: std::time::Duration::from_millis(500),
+            })
+            .await;
+        let target_result = responder.await.expect("responder");
+        assert!(
+            matches!(result, ProtocolResult::Pass { .. }),
+            "initiator must retry lost first query: {result:?}"
+        );
+        assert!(
+            matches!(target_result, ProtocolResult::Pass { .. }),
+            "target must receive retried query: {target_result:?}"
+        );
     }
 }

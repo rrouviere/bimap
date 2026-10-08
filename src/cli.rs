@@ -93,3 +93,40 @@ pub fn parse() -> Result<Command, String> {
         None => Err("no command specified, use --help for usage".into()),
     }
 }
+
+pub fn parse_port_ranges(specifications: &[String]) -> Result<Vec<(String, u16, u16)>, String> {
+    specifications
+        .iter()
+        .map(|specification| {
+            let invalid = |reason: &str| format!("invalid port-range '{specification}': {reason}");
+            let (transport, range) = specification
+                .split_once('/')
+                .ok_or_else(|| invalid("expected transport/port or transport/start-end"))?;
+            if !matches!(transport, "tcp" | "udp" | "icmp") {
+                return Err(invalid("transport must be tcp, udp, or icmp"));
+            }
+            if transport == "icmp" && matches!(range, "any" | "icmp") {
+                return Ok((transport.to_string(), 0, 0));
+            }
+            let parse_port = |value: &str| {
+                if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(invalid("ports must be integers from 0 to 65535"));
+                }
+                value
+                    .parse::<u16>()
+                    .map_err(|_| invalid("ports must be integers from 0 to 65535"))
+            };
+            let (start, end) = match range.split_once('-') {
+                Some((start, end)) => (parse_port(start)?, parse_port(end)?),
+                None => {
+                    let port = parse_port(range)?;
+                    (port, port)
+                }
+            };
+            if start > end {
+                return Err(invalid("range start must not exceed range end"));
+            }
+            Ok((transport.to_string(), start, end))
+        })
+        .collect()
+}

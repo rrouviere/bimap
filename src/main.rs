@@ -1,4 +1,4 @@
-use bimap::cli::{parse, Command};
+use bimap::cli::{parse, parse_port_ranges, Command};
 use bimap::control::msg::Message;
 use bimap::output;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -187,7 +187,7 @@ fn main() {
                     }
                 };
                 use bimap::control::channel_from_client_tls;
-                use bimap::control::tls::{client_tls_connect, make_tls_connector};
+                use bimap::control::tls::{client_tls_connect, make_pinned_tls_connector};
                 use bimap::orchestrator;
                 use bimap::test::build_registry;
 
@@ -228,7 +228,15 @@ fn main() {
                     }
                 }
 
-                let connector = match make_tls_connector() {
+                let port_ranges = match parse_port_ranges(&port_range) {
+                    Ok(ranges) => ranges,
+                    Err(error) => {
+                        error!("{error}");
+                        return 2;
+                    }
+                };
+
+                let connector = match make_pinned_tls_connector(fingerprint.as_deref()) {
                     Ok(c) => c,
                     Err(e) => {
                         error!("{e}");
@@ -262,41 +270,11 @@ fn main() {
                     }
                 };
 
-                debug!("server fingerprint: {hello}");
+                debug!("server advertised fingerprint: {hello}");
 
-                if let Some(ref expected) = fingerprint {
-                    if hello != *expected
-                        && format!("SHA256:{hello}") != *expected
-                        && hello != expected.replace("SHA256:", "")
-                    {
-                        error!("fingerprint mismatch!");
-                        return 3;
-                    }
+                if fingerprint.is_some() {
                     info!("fingerprint verified");
                 }
-
-                let port_ranges: Vec<(String, u16, u16)> = port_range
-                    .iter()
-                    .filter_map(|spec| {
-                        let parts: Vec<&str> = spec.splitn(2, '/').collect();
-                        if parts.len() != 2 {
-                            error!("invalid port-range: {spec}");
-                            return None;
-                        }
-                        let transport = parts[0].to_string();
-                        if parts[1] == "any" || parts[1] == "icmp" {
-                            Some((transport, 0, 0))
-                        } else {
-                            let range_parts: Vec<&str> = parts[1].splitn(2, '-').collect();
-                            let start = range_parts[0].parse().ok()?;
-                            let end = range_parts
-                                .get(1)
-                                .and_then(|e| e.parse().ok())
-                                .unwrap_or(start);
-                            Some((transport, start, end))
-                        }
-                    })
-                    .collect();
 
                 let config = bimap::orchestrator::ClientConfig {
                     tests: test,

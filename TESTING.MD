@@ -37,6 +37,8 @@ tls_connrefused_reports_refused_fail
 | L2 E2E | `tests/e2e.rs` | `cargo test --test e2e` | <30s | spawn subprocesses |
 | L3 fault | `tests/fault.rs` | `cargo test --test fault` | <15s | inject broken protocol |
 
+Audit regressions run in CI and the pre-commit hook: `tests/cli_regressions.rs`, `tests/control_security.rs`, and `tests/orchestrator_regressions.rs`. They cover invalid configuration, certificate pinning, forged TLS signatures, canceled/oversized framing, retained exports, reverse addresses, and control disconnects. `cargo test --all-targets` includes all suites; two raw-ICMP checks remain ignored unless run as root.
+
 ## L0 — Packet & control unit tests
 
 Per source file `#[cfg(test)]` block:
@@ -154,7 +156,7 @@ Install: `git config core.hooksPath .githooks`
 ## CI (no root)
 
 ```sh
-cargo test --lib --test integration --test e2e --test fault
+cargo test --all-targets
 ```
 
 ICMP tests use `#[ignore = "root_required"]` and `geteuid() == 0` guard at runtime.

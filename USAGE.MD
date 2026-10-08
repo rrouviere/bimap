@@ -21,7 +21,7 @@ bimap --client <server-ip> [options]
 --port-range <spec>       port range to probe, repeatable
 --bidir                   run all tests in reverse direction
 --timeout <ms>            per-test timeout (default 5000)
---fingerprint <hash>      trust this SHA-256 fingerprint, skip prompt
+--fingerprint <hash>      verify the actual TLS certificate's SHA-256 fingerprint
 --json                    output one JSON object per result line
 -q, --quiet               suppress passing tests from output
 -v, --verbose             debug output including timing and raw hex
@@ -39,6 +39,10 @@ bimap --client <server-ip> [options]
 | `1kb` | L4 | TCP/UDP | Connect + send 1 KB, verify integrity | no |
 | `tls` | L7 | TCP | TLS handshake + 1 KB data transfer | no |
 | `dns` | L7 | TCP/UDP | DNS query, verify valid response | no |
+
+Port ranges must use `tcp`, `udp`, or `icmp`, with numeric values from 0 to 65535 and an ascending range. `icmp/any` selects ICMP tests. Invalid ranges exit with configuration error 2 before connecting.
+
+DNS tests enforce an overall `--timeout` deadline. `icmp-full` shares that deadline across all probed types and reports unanswered probes or socket errors instead of unconditional success; raw sockets require root or `CAP_NET_RAW`.
 
 ## Port range syntax
 

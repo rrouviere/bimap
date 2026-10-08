@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, trace};
 
-use crate::control::tls::generate_ephemeral_cert;
+use crate::control::tls::{generate_ephemeral_cert, make_tls_connector};
 use crate::test::port::compute_sha256;
 
 const KB: usize = 1024;
@@ -26,66 +26,11 @@ fn kb_payload() -> Vec<u8> {
     data
 }
 
-#[derive(Debug)]
-struct NoVerify;
-
-impl rustls::client::danger::ServerCertVerifier for NoVerify {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::aws_lc_rs::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
-    }
-}
-
 async fn tls_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-
-    let config = match rustls::ClientConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("client config: {e}"),
-            };
-        }
+    let connector = match make_tls_connector() {
+        Ok(connector) => connector,
+        Err(reason) => return ProtocolResult::Error { reason },
     };
-
-    let config = config
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(NoVerify))
-        .with_no_client_auth();
-
-    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
     let domain = match rustls::pki_types::ServerName::try_from("localhost") {
         Ok(d) => d,
         Err(_) => {

@@ -1,6 +1,5 @@
 use std::process::{Command, Stdio};
 
-const FAULT_CONTROL_PORT: u16 = 14533;
 const FAULT_SIGKILL_PORT: u16 = 14534;
 
 #[test]
@@ -42,27 +41,14 @@ fn server_sigkill_mid_session_client_clean_exit() {
 }
 
 #[test]
-fn oversized_config_rejected() {
-    let mut server = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args([
-            "server",
-            "--bind",
-            &format!("127.0.0.1:{FAULT_CONTROL_PORT}"),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn server");
-
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-
+fn cli_tcp_oversized_port_range_rejected() {
     let output = Command::new(env!("CARGO_BIN_EXE_bimap"))
         .args([
             "client",
             "--server",
             "127.0.0.1",
             "--port",
-            &FAULT_CONTROL_PORT.to_string(),
+            "14533",
             "--test",
             "open",
             "--port-range",
@@ -73,7 +59,7 @@ fn oversized_config_rejected() {
         .output()
         .expect("run client");
 
-    server.kill().ok();
-    server.wait().ok();
-    assert!(output.status.success() || !output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid port-range"), "{stderr}");
 }

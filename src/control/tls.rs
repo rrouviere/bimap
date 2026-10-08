@@ -50,54 +50,75 @@ pub fn make_tls_acceptor(
 }
 
 pub fn make_tls_connector() -> Result<TlsConnector, String> {
+    make_pinned_tls_connector(None)
+}
+
+pub fn make_pinned_tls_connector(expected: Option<&str>) -> Result<TlsConnector, String> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
         .map_err(|e| format!("client config: {e}"))?;
     let config = config
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(NoVerify))
+        .with_custom_certificate_verifier(Arc::new(PeerVerifier {
+            expected: expected.map(str::to_owned),
+            algorithms: provider.signature_verification_algorithms,
+        }))
         .with_no_client_auth();
     Ok(TlsConnector::from(Arc::new(config)))
 }
 
 #[derive(Debug)]
-struct NoVerify;
+struct PeerVerifier {
+    expected: Option<String>,
+    algorithms: rustls::crypto::WebPkiSupportedAlgorithms,
+}
 
-impl rustls::client::danger::ServerCertVerifier for NoVerify {
+impl rustls::client::danger::ServerCertVerifier for PeerVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
         _intermediates: &[rustls::pki_types::CertificateDer<'_>],
         _server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if let Some(expected) = &self.expected {
+            let actual = format!("{:x}", Sha256::digest(end_entity.as_ref()));
+            let expected = expected.trim();
+            let expected = match expected.split_once(':') {
+                Some((prefix, digest)) if prefix.eq_ignore_ascii_case("sha256") => digest,
+                _ => expected,
+            };
+            if !actual.eq_ignore_ascii_case(expected) {
+                return Err(rustls::Error::General(
+                    "certificate fingerprint mismatch".into(),
+                ));
+            }
+        }
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        signature: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls12_signature(message, cert, signature, &self.algorithms)
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        signature: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls13_signature(message, cert, signature, &self.algorithms)
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::aws_lc_rs::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
+        self.algorithms.supported_schemes()
     }
 }
 

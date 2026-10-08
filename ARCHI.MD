@@ -53,12 +53,14 @@ DNS uses `hickory-proto` for RFC-compliant wire format.
 ## Control protocol
 
 JSON over TLS on TCP/443. One JSON object per line (newline-delimited).
+Receive framing preserves partial messages across canceled reads. Frames are limited to 1 MiB including the newline; oversized frames invalidate the channel.
 
 ### Certificates
 - Server generates an ephemeral self-signed certificate at startup.
-- Prints SHA-256 fingerprint to stderr and stdout.
-- Client receives the cert, prints its fingerprint, prompts for trust (or `--fingerprint <hash>`).
-- No CA, no persisted keys. Security is out of scope for v0.
+- Prints SHA-256 fingerprint to stderr.
+- `--fingerprint <hash>` pins the actual TLS leaf certificate during the handshake, independently of the advertised Hello fingerprint.
+- Handshake signatures are verified with or without a pin. Without a pin, the client accepts self-signed certificates automatically.
+- No CA or persisted keys.
 
 ### Message types
 
@@ -94,6 +96,7 @@ JSON over TLS on TCP/443. One JSON object per line (newline-delimited).
 ### Direction encoding
 - `"->"` = client initiates traffic to server (normal mode)
 - `"<-"` = server initiates traffic to client (bidir mode)
+Reverse tests connect to the control client's peer address and bind on the client's local control address. Forward and reverse batches run separately so localhost listeners do not compete for the same port; ports within each batch remain parallel.
 
 ### Test flow per (protocol, transport, port, direction)
 
@@ -149,6 +152,7 @@ pub enum ErrorReason { Bind(EADDRINUSE), Permission, Internal, ... }
 - Requires root or `CAP_NET_RAW`.
 - `icmp-ping`: send echo request (type 8), wait for echo reply (type 0).
 - `icmp-full`: iterate all known ICMP types/subtypes (0–18, 30, 31, 33–35, 37, 38, 40, 42), send each, log any reply.
+- `icmp-full` uses raw sockets for all types and shares the `--timeout` budget across the sweep. Unanswered probes produce failure; socket errors produce error, with per-type details in the reason. Blocking socket I/O runs outside the async executor.
 - ICMP is stateless at the server — kernel handles echo reply. Server side only reports what it observed on the wire.
 - ICMP header structure from `pnet_packet::icmp`.
 

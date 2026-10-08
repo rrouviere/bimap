@@ -32,6 +32,7 @@ fn create_raw_socket() -> Result<i32, String> {
 }
 
 unsafe fn set_socket_timeout(fd: i32, timeout: Duration) -> Result<(), String> {
+    let timeout = timeout.max(Duration::from_micros(1));
     let tv = libc::timeval {
         tv_sec: timeout.as_secs() as libc::time_t,
         tv_usec: timeout.subsec_micros() as libc::suseconds_t,
@@ -55,7 +56,7 @@ fn to_sockaddr_in(addr: Ipv4Addr) -> libc::sockaddr_in {
     sa.sin_family = libc::AF_INET as libc::sa_family_t;
     sa.sin_port = 0;
     sa.sin_addr = libc::in_addr {
-        s_addr: u32::from_be_bytes(addr.octets()),
+        s_addr: u32::from_ne_bytes(addr.octets()),
     };
     sa
 }
@@ -78,90 +79,7 @@ fn ip_header_len(buf: &[u8]) -> Option<usize> {
     Some((packet.get_header_length() as usize) * 4)
 }
 
-async fn send_icmp_echo(
-    dest: Ipv4Addr,
-    id: u16,
-    seq: u16,
-    icmp_type: u8,
-    timeout: Duration,
-) -> ProtocolResult {
-    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
-    if fd < 0 {
-        return send_icmp_echo_raw(dest, id, seq, icmp_type, timeout).await;
-    }
-
-    if let Err(e) = unsafe { set_socket_timeout(fd, timeout) } {
-        unsafe { libc::close(fd) };
-        return ProtocolResult::Error { reason: e };
-    }
-
-    let payload = b"bimap";
-    let sa = to_sockaddr_in(dest);
-
-    debug!("icmp ping-socket sending echo request to {dest}");
-
-    let sent = unsafe {
-        libc::sendto(
-            fd,
-            payload.as_ptr() as *const libc::c_void,
-            payload.len(),
-            0,
-            &sa as *const _ as *const libc::sockaddr,
-            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-        )
-    };
-    if sent < 0 {
-        let err = std::io::Error::last_os_error();
-        unsafe { libc::close(fd) };
-        return ProtocolResult::Error {
-            reason: format!("sendto: {err}"),
-        };
-    }
-
-    trace!(
-        "icmp waiting for echo reply (timeout={}ms)",
-        timeout.as_millis()
-    );
-
-    let mut recv_buf = [0u8; 1500];
-    let received = unsafe {
-        libc::recvfrom(
-            fd,
-            recv_buf.as_mut_ptr() as *mut libc::c_void,
-            recv_buf.len(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-
-    unsafe { libc::close(fd) };
-
-    if received < 0 {
-        let err = std::io::Error::last_os_error();
-        if err.kind() == std::io::ErrorKind::WouldBlock
-            || err.kind() == std::io::ErrorKind::TimedOut
-        {
-            return ProtocolResult::Fail {
-                reason: "timeout".into(),
-                sent_bytes: sent as u64,
-                received_bytes: 0,
-            };
-        }
-        return ProtocolResult::Fail {
-            reason: format!("no-reply: {err}"),
-            sent_bytes: sent as u64,
-            received_bytes: 0,
-        };
-    }
-
-    ProtocolResult::Pass {
-        sent_bytes: sent as u64,
-        received_bytes: received as u64,
-    }
-}
-
-async fn send_icmp_echo_raw(
+fn send_icmp_echo_raw(
     dest: Ipv4Addr,
     id: u16,
     seq: u16,
@@ -279,7 +197,23 @@ async fn send_icmp_echo_raw(
         let reply_type = recv_buf[icmp_offset];
         let reply_id = u16::from_be_bytes([recv_buf[icmp_offset + 4], recv_buf[icmp_offset + 5]]);
 
-        if reply_type == ICMP_TYPE_ECHO_REPLY && reply_id == id {
+        let reply_sequence =
+            u16::from_be_bytes([recv_buf[icmp_offset + 6], recv_buf[icmp_offset + 7]]);
+        let expected_type = match icmp_type {
+            8 => Some(ICMP_TYPE_ECHO_REPLY),
+            13 => Some(14),
+            15 => Some(16),
+            17 => Some(18),
+            42 => Some(43),
+            _ => None,
+        };
+        let source_matches = pnet_packet::ipv4::Ipv4Packet::new(&recv_buf[..n])
+            .is_some_and(|packet| packet.get_source() == dest);
+        if expected_type == Some(reply_type)
+            && reply_id == id
+            && reply_sequence == seq
+            && source_matches
+        {
             unsafe { libc::close(fd) };
             return ProtocolResult::Pass {
                 sent_bytes: sent as u64,
@@ -396,27 +330,83 @@ impl TestProtocol for IcmpFullTest {
             }
         };
 
-        let mut result_count = 0u64;
-        for (idx, &(icmp_type, name)) in ALL_ICMP_TYPES.iter().enumerate() {
-            let result =
-                send_icmp_echo(dest, icmp_type as u16, idx as u16, icmp_type, ctx.timeout).await;
-            match &result {
-                ProtocolResult::Pass { .. } => {
-                    info!("icmp-full: type={} ({}) pass", icmp_type, name);
-                }
-                ProtocolResult::Fail { reason, .. } => {
-                    info!("icmp-full: type={} ({}) fail: {}", icmp_type, name, reason);
-                }
-                ProtocolResult::Error { reason } => {
-                    info!("icmp-full: type={} ({}) error: {}", icmp_type, name, reason);
+        let timeout = ctx.timeout;
+        match tokio::task::spawn_blocking(move || {
+            let per_type_timeout =
+                (timeout / ALL_ICMP_TYPES.len() as u32).max(Duration::from_millis(1));
+            let started = std::time::Instant::now();
+            let mut sent_bytes = 0;
+            let mut received_bytes = 0;
+            let mut failures = Vec::new();
+            let mut errors = Vec::new();
+            for (idx, &(icmp_type, name)) in ALL_ICMP_TYPES.iter().enumerate() {
+                let remaining = timeout.saturating_sub(started.elapsed());
+                let result = if remaining.is_zero() {
+                    ProtocolResult::Fail {
+                        reason: "timeout".into(),
+                        sent_bytes: 0,
+                        received_bytes: 0,
+                    }
+                } else {
+                    send_icmp_echo_raw(
+                        dest,
+                        icmp_type as u16,
+                        idx as u16,
+                        icmp_type,
+                        per_type_timeout
+                            .min(remaining)
+                            .max(Duration::from_micros(1)),
+                    )
+                };
+                match result {
+                    ProtocolResult::Pass {
+                        sent_bytes: sent,
+                        received_bytes: received,
+                    } => {
+                        info!("icmp-full: type={} ({}) pass", icmp_type, name);
+                        sent_bytes += sent;
+                        received_bytes += received;
+                    }
+                    ProtocolResult::Fail {
+                        reason,
+                        sent_bytes: sent,
+                        received_bytes: received,
+                    } => {
+                        info!("icmp-full: type={} ({}) fail: {}", icmp_type, name, reason);
+                        sent_bytes += sent;
+                        received_bytes += received;
+                        failures.push(format!("type {icmp_type} ({name}): {reason}"));
+                    }
+                    ProtocolResult::Error { reason } => {
+                        info!("icmp-full: type={} ({}) error: {}", icmp_type, name, reason);
+                        errors.push(format!("type {icmp_type} ({name}): {reason}"));
+                    }
                 }
             }
-            result_count += 1;
-        }
-
-        ProtocolResult::Pass {
-            sent_bytes: result_count,
-            received_bytes: 0,
+            if !errors.is_empty() {
+                errors.extend(failures);
+                ProtocolResult::Error {
+                    reason: errors.join("; "),
+                }
+            } else if !failures.is_empty() {
+                ProtocolResult::Fail {
+                    reason: failures.join("; "),
+                    sent_bytes,
+                    received_bytes,
+                }
+            } else {
+                ProtocolResult::Pass {
+                    sent_bytes,
+                    received_bytes,
+                }
+            }
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => ProtocolResult::Error {
+                reason: format!("icmp worker: {error}"),
+            },
         }
     }
 }
@@ -424,6 +414,73 @@ impl TestProtocol for IcmpFullTest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn icmp_full_missing_raw_permission_returns_error() {
+        if let Ok(descriptor) = create_raw_socket() {
+            unsafe { libc::close(descriptor) };
+            return;
+        }
+        let result = IcmpFullTest
+            .run(TestContext {
+                direction: Direction::ClientToServer,
+                transport: Transport::Icmp,
+                port: 0,
+                target_addr: "127.0.0.1:0".parse().expect("address"),
+                timeout: Duration::from_millis(10),
+            })
+            .await;
+        assert!(
+            matches!(result, ProtocolResult::Error { .. }),
+            "raw socket errors must not pass: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "root_required"]
+    async fn icmp_full_unanswered_types_return_failure() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let result = IcmpFullTest
+            .run(TestContext {
+                direction: Direction::ClientToServer,
+                transport: Transport::Icmp,
+                port: 0,
+                target_addr: "127.0.0.1:0".parse().expect("address"),
+                timeout: Duration::from_millis(10),
+            })
+            .await;
+        assert!(
+            matches!(result, ProtocolResult::Fail { .. }),
+            "unanswered types must not pass: {result:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "root_required"]
+    fn icmp_raw_echo_complete_packet_receives_reply() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let result =
+            send_icmp_echo_raw(Ipv4Addr::LOCALHOST, 1234, 7, 8, Duration::from_millis(250));
+        assert!(
+            matches!(result, ProtocolResult::Pass { sent_bytes: 13, .. }),
+            "complete ICMP request should receive reply: {result:?}"
+        );
+    }
+
+    #[test]
+    fn icmp_socket_address_preserves_network_bytes() {
+        assert_eq!(
+            to_sockaddr_in(Ipv4Addr::LOCALHOST)
+                .sin_addr
+                .s_addr
+                .to_ne_bytes(),
+            [127, 0, 0, 1]
+        );
+    }
 
     #[test]
     fn has_icmp_capability_returns_bool() {
