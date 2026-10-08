@@ -82,12 +82,20 @@ Use `client --help` and `server --help` for all options.
 - **ERR**: Bimap could not run the test, for example because a port was occupied
   or permission was denied.
 
-A timeout alone does not prove filtering or identify the responsible middlebox.
-Payload checks can reveal a mismatch; current results do not identify a specific
-packet transformation.
+At the end of a human-readable scan, Bimap groups successful tests into
+candidate allow rules by protocol, transport, port, and direction. These describe
+only the tested paths; they are not a reconstruction of the middlebox's
+configuration. Failed exchanges remain inconclusive: a timeout alone does not
+prove filtering or identify where traffic stopped.
+
+Payload-integrity tests report observed payload differences separately. This
+confirms that the received data differed from the expected data, but does not
+identify which device changed it or why. Other protocol transformations are
+planned; see the [roadmap](ROADMAP.MD).
 
 For scripts, use `--json` for one JSON result per line, or `--json-export`
-for a single report with a summary:
+for a single report with counts, candidate allow rules, observed payload
+differences, and per-test results:
 
 ```sh
 ./target/release/bimap client --control-server 192.0.2.2:10443 \

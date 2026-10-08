@@ -330,7 +330,6 @@ async fn execute_batch(
         config.json_export,
     );
     let mut fail_map: HashMap<(String, String, String, String), Vec<u16>> = HashMap::new();
-    let mut pass_map: HashMap<(String, String, String), Vec<u16>> = HashMap::new();
     for entry in batch {
         let result = completed
             .remove(&entry.id)
@@ -344,16 +343,7 @@ async fn execute_batch(
         if !config.json_export {
             if interactive {
                 match &result {
-                    ProtocolResult::Pass { .. } => {
-                        pass_map
-                            .entry((
-                                entry.test_name.to_string(),
-                                entry.transport_str.to_string(),
-                                entry.direction.as_str().to_string(),
-                            ))
-                            .or_default()
-                            .push(entry.port);
-                    }
+                    ProtocolResult::Pass { .. } => {}
                     ProtocolResult::Fail { reason, .. } | ProtocolResult::Error { reason } => {
                         fail_map
                             .entry((
@@ -382,7 +372,7 @@ async fn execute_batch(
                 print_result(entry, &result, config.json, server_error.as_deref());
             }
         }
-        if config.json_export {
+        if !config.json || config.json_export {
             results.push(TestEntry {
                 protocol: entry.test_name.to_string(),
                 transport: entry.transport_str.to_string(),
@@ -396,9 +386,6 @@ async fn execute_batch(
 
     if interactive {
         finish_fail_line();
-        for line in consolidated_pass_lines(&pass_map) {
-            print_pass(format_args!("{line}"));
-        }
     }
 
     Ok(())
@@ -537,7 +524,7 @@ pub async fn run_client(
     if config.json_export {
         print_json_export(&merge_into_ranges(&results), passed, failed, errors);
     } else if !config.json {
-        print_user_summary(passed, failed, errors);
+        print_user_summary(&results, passed, failed, errors);
     }
 
     channel.send(&Message::Done).await?;
@@ -581,16 +568,6 @@ fn validate_port_ranges(port_ranges: &[(String, u16, u16)]) -> Result<(), String
 
 fn should_render_interactive(terminal: bool, quiet: bool, json: bool, json_export: bool) -> bool {
     terminal && !quiet && !json && !json_export
-}
-
-// Passing lines wait until the live failure row finishes to avoid overwriting it.
-fn consolidated_pass_lines(pass_map: &HashMap<(String, String, String), Vec<u16>>) -> Vec<String> {
-    pass_map
-        .iter()
-        .map(|((tn, ts, dir), ports)| {
-            format!("{} {} {} {}", tn, ts, format_port_ranges(ports), dir)
-        })
-        .collect()
 }
 
 fn protocol_result_to_report(id: u32, result: &ProtocolResult) -> Message {
@@ -764,10 +741,56 @@ fn merge_into_ranges(results: &[TestEntry]) -> Vec<MergedEntry> {
     merged
 }
 
-fn print_user_summary(passed: u32, failed: u32, errors: u32) {
-    print_summary(format_args!(
-        "{passed} passed, {failed} failed, {errors} errors"
-    ));
+fn print_user_summary(results: &[TestEntry], passed: u32, failed: u32, errors: u32) {
+    println!("\nScan summary");
+    println!("  {passed} passed, {failed} failed, {errors} errors");
+
+    let merged = merge_into_ranges(results);
+    let observed_rules: Vec<_> = merged
+        .iter()
+        .filter(|entry| entry.status == "pass")
+        .collect();
+    if observed_rules.is_empty() {
+        println!("\nNo successful paths observed.");
+    } else {
+        print_summary("\nCandidate allow rules (successful tests only):");
+        for entry in observed_rules {
+            println!("  {}", format_merged_entry(entry));
+        }
+    }
+
+    let changed_payloads: Vec<_> = merged
+        .iter()
+        .filter(|entry| {
+            entry.status == "fail" && entry.reason.contains("mismatch: received payload differs")
+        })
+        .collect();
+    if changed_payloads.is_empty() {
+        println!("\nNo payload differences reported by the selected tests.");
+    } else {
+        print_summary("\nObserved payload differences:");
+        for entry in changed_payloads {
+            println!("  {}", format_merged_entry(entry));
+        }
+    }
+
+    if failed > 0 || errors > 0 {
+        println!("\nFailed exchanges do not by themselves prove that traffic was blocked.");
+    }
+}
+
+fn format_merged_entry(entry: &MergedEntry) -> String {
+    let ports = match &entry.ports {
+        PortRange::Single(port) => port.to_string(),
+        PortRange::Range(start, end) => format!("{start}-{end}"),
+    };
+    format!(
+        "{} {} ports {} {}",
+        entry.protocol,
+        entry.transport,
+        ports,
+        entry.direction.as_str()
+    )
 }
 
 fn print_json_export(merged: &[MergedEntry], passed: u32, failed: u32, errors: u32) {
@@ -810,6 +833,33 @@ fn print_json_export(merged: &[MergedEntry], passed: u32, failed: u32, errors: u
             "failed": failed,
             "errors": errors
         },
+        "observed_rules": merged.iter().filter(|entry| entry.status == "pass").map(|entry| {
+            serde_json::json!({
+                "protocol": entry.protocol,
+                "transport": entry.transport,
+                "direction": entry.direction.as_str(),
+                "ports": match &entry.ports {
+                    PortRange::Single(port) => serde_json::json!({"port": port}),
+                    PortRange::Range(start, end) => serde_json::json!({"start": start, "end": end}),
+                }
+            })
+        }).collect::<Vec<_>>(),
+        "observed_transformations": merged.iter().filter(|entry| {
+            entry.status == "fail"
+                && entry.reason.contains("mismatch: received payload differs")
+        }).map(|entry| {
+            serde_json::json!({
+                "kind": "payload_difference",
+                "protocol": entry.protocol,
+                "transport": entry.transport,
+                "direction": entry.direction.as_str(),
+                "reason": entry.reason,
+                "ports": match &entry.ports {
+                    PortRange::Single(port) => serde_json::json!({"port": port}),
+                    PortRange::Range(start, end) => serde_json::json!({"start": start, "end": end}),
+                }
+            })
+        }).collect::<Vec<_>>(),
         "results": results_arr,
     });
 
@@ -855,33 +905,5 @@ mod tests {
         assert!(
             matches!(address, SocketAddr::V6(address) if address.scope_id() == 2 && address.port() == 8080)
         );
-    }
-
-    #[test]
-    fn consolidated_pass_lines_groups_contiguous_ports() {
-        let mut pass_map: HashMap<(String, String, String), Vec<u16>> = HashMap::new();
-        pass_map.insert(
-            ("1kb".into(), "tcp".into(), "->".into()),
-            vec![1, 2, 3, 5, 6],
-        );
-        let lines = consolidated_pass_lines(&pass_map);
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0], "1kb tcp 1-3,5-6 ->");
-    }
-
-    #[test]
-    fn consolidated_pass_lines_empty_when_no_passes() {
-        let pass_map: HashMap<(String, String, String), Vec<u16>> = HashMap::new();
-        assert!(consolidated_pass_lines(&pass_map).is_empty());
-    }
-
-    #[test]
-    fn consolidated_pass_lines_emits_one_line_per_group() {
-        let mut pass_map: HashMap<(String, String, String), Vec<u16>> = HashMap::new();
-        pass_map.insert(("1kb".into(), "tcp".into(), "->".into()), vec![1, 2]);
-        pass_map.insert(("1kb".into(), "tcp".into(), "<-".into()), vec![10, 11]);
-        let mut lines = consolidated_pass_lines(&pass_map);
-        lines.sort_unstable();
-        assert_eq!(lines, vec!["1kb tcp 1-2 ->", "1kb tcp 10-11 <-"]);
     }
 }
