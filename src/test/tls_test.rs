@@ -1,285 +1,44 @@
+use super::exchange::{accept, connect, echo, kilobyte_payload, perform, roundtrip};
+use crate::control::tls::{generate_ephemeral_cert, make_tls_acceptor, make_tls_connector};
 use crate::orchestrator::ProtocolResult;
 use crate::test::{Direction, Layer, TestContext, TestProtocol, Transport};
 use async_trait::async_trait;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, trace};
+use std::time::Duration;
 
-use crate::control::tls::{generate_ephemeral_cert, make_tls_connector};
-use crate::test::port::compute_sha256;
-
-const KB: usize = 1024;
-
-fn kb_payload() -> Vec<u8> {
-    let mut data = Vec::with_capacity(KB);
-    for i in 0u8..=255 {
-        for _ in 0..4 {
-            data.push(i);
+async fn tls_initiator(
+    target: SocketAddr,
+    timeout: Duration,
+) -> Result<ProtocolResult, ProtocolResult> {
+    let connector = make_tls_connector().map_err(|reason| ProtocolResult::Error { reason })?;
+    let domain = rustls::pki_types::ServerName::try_from("localhost").map_err(|error| {
+        ProtocolResult::Error {
+            reason: format!("server name: {error}"),
         }
-        if data.len() >= KB {
-            break;
-        }
-    }
-    data.truncate(KB);
-    data
+    })?;
+    let connection = connect(target, timeout).await?;
+    let mut stream = perform(
+        connector.connect(domain, connection),
+        timeout,
+        "tls-handshake",
+        0,
+        0,
+    )
+    .await?;
+    Ok(roundtrip(&mut stream, &kilobyte_payload(), timeout).await)
 }
 
-async fn tls_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let connector = match make_tls_connector() {
-        Ok(connector) => connector,
-        Err(reason) => return ProtocolResult::Error { reason },
-    };
-    let domain = match rustls::pki_types::ServerName::try_from("localhost") {
-        Ok(d) => d,
-        Err(_) => {
-            return ProtocolResult::Error {
-                reason: "bad server name".into(),
-            };
-        }
-    };
-
-    let mut last_err = String::new();
-    let mut tcp_stream = None;
-    for attempt in 0..20 {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        debug!("tls connecting to {}:{}", target.ip(), target.port());
-        match tokio::time::timeout(timeout, TcpStream::connect(target)).await {
-            Ok(Ok(s)) => {
-                tcp_stream = Some(s);
-                break;
-            }
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                last_err = "refused".into();
-            }
-            Ok(Err(e)) => {
-                return ProtocolResult::Fail {
-                    reason: format!("connect: {e}"),
-                    sent_bytes: 0,
-                    received_bytes: 0,
-                };
-            }
-            Err(_) => {
-                last_err = "timeout".into();
-            }
-        }
-    }
-    let tcp_stream = match tcp_stream {
-        Some(s) => s,
-        None => {
-            return ProtocolResult::Fail {
-                reason: last_err,
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    };
-
-    debug!("tls starting handshake with localhost");
-    let mut tls_stream =
-        match tokio::time::timeout(timeout, connector.connect(domain, tcp_stream)).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                return ProtocolResult::Fail {
-                    reason: format!("tls-handshake: {e}"),
-                    sent_bytes: 0,
-                    received_bytes: 0,
-                };
-            }
-            Err(_) => {
-                return ProtocolResult::Fail {
-                    reason: "tls-handshake: timeout".into(),
-                    sent_bytes: 0,
-                    received_bytes: 0,
-                };
-            }
-        };
-
-    let payload = kb_payload();
-
-    debug!("tls sending {} bytes", payload.len());
-    match tokio::time::timeout(timeout, tls_stream.write_all(&payload)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("write: {e}"),
-                sent_bytes: payload.len() as u64,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "write: timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    }
-
-    let mut buf = vec![0u8; KB];
-    trace!("tls waiting for {} bytes", KB);
-    match tokio::time::timeout(timeout, tls_stream.read_exact(&mut buf)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("read: {e}"),
-                sent_bytes: payload.len() as u64,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "read: timeout".into(),
-                sent_bytes: payload.len() as u64,
-                received_bytes: 0,
-            };
-        }
-    }
-
-    let sent_hash = compute_sha256(&payload);
-    let recv_hash = compute_sha256(&buf);
-    if sent_hash == recv_hash {
-        ProtocolResult::Pass {
-            sent_bytes: KB as u64,
-            received_bytes: KB as u64,
-        }
-    } else {
-        ProtocolResult::Fail {
-            reason: "mismatch".into(),
-            sent_bytes: KB as u64,
-            received_bytes: KB as u64,
-        }
-    }
-}
-
-async fn tls_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let (cert_der, key_der, _fingerprint) = match generate_ephemeral_cert() {
-        Ok(c) => c,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("cert: {e}"),
-            };
-        }
-    };
-
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = match rustls::ServerConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("server config: {e}"),
-            };
-        }
-    };
-
-    let config = match config
-        .with_no_client_auth()
-        .with_single_cert(vec![cert_der], key_der)
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("cert config: {e}"),
-            };
-        }
-    };
-
-    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-    let listener = match TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("bind: {e}"),
-            };
-        }
-    };
-
-    debug!("tls waiting for connection on {}", addr);
-    let (tcp_stream, _) = match tokio::time::timeout(timeout, listener.accept()).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("accept: {e}"),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    };
-
-    debug!("tls starting handshake");
-    let mut tls_stream = match tokio::time::timeout(timeout, acceptor.accept(tcp_stream)).await {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("tls-handshake: {e}"),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "tls-handshake: timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    };
-
-    let mut buf = vec![0u8; KB];
-    trace!("tls waiting for {} bytes", KB);
-    match tokio::time::timeout(timeout, tls_stream.read_exact(&mut buf)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("read: {e}"),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "read: timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    }
-
-    debug!("tls sending {} bytes", buf.len());
-    match tokio::time::timeout(timeout, tls_stream.write_all(&buf)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("write: {e}"),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "write: timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    }
-
-    ProtocolResult::Pass {
-        sent_bytes: KB as u64,
-        received_bytes: KB as u64,
-    }
+async fn tls_target(
+    address: SocketAddr,
+    timeout: Duration,
+) -> Result<ProtocolResult, ProtocolResult> {
+    let (certificate, key, _) =
+        generate_ephemeral_cert().map_err(|reason| ProtocolResult::Error { reason })?;
+    let acceptor =
+        make_tls_acceptor(certificate, key).map_err(|reason| ProtocolResult::Error { reason })?;
+    let connection = accept(address, timeout).await?;
+    let mut stream = perform(acceptor.accept(connection), timeout, "tls-handshake", 0, 0).await?;
+    Ok(echo(&mut stream, &kilobyte_payload(), timeout).await)
 }
 
 pub struct TlsTest;
@@ -289,19 +48,19 @@ impl TestProtocol for TlsTest {
     fn name(&self) -> &'static str {
         "tls"
     }
-
     fn layer(&self) -> Layer {
         Layer::L7
     }
-
     fn transports(&self) -> &[Transport] {
         &[Transport::Tcp]
     }
-
-    async fn run(&self, ctx: TestContext) -> ProtocolResult {
-        match ctx.direction {
-            Direction::ClientToServer => tls_initiator(ctx.target_addr, ctx.timeout).await,
-            Direction::ServerToClient => tls_target(ctx.target_addr, ctx.timeout).await,
+    async fn run(&self, context: TestContext) -> ProtocolResult {
+        let result = match context.direction {
+            Direction::ClientToServer => tls_initiator(context.target_addr, context.timeout).await,
+            Direction::ServerToClient => tls_target(context.target_addr, context.timeout).await,
+        };
+        match result {
+            Ok(result) | Err(result) => result,
         }
     }
 }

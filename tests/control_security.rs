@@ -184,7 +184,6 @@ async fn invalid_signature_rejected(
             .run(TestContext {
                 direction: Direction::ClientToServer,
                 transport: Transport::Tcp,
-                port,
                 target_addr: address,
                 timeout: Duration::from_secs(1),
             })

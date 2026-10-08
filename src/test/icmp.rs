@@ -467,7 +467,6 @@ mod tests {
             .run(TestContext {
                 direction: Direction::ClientToServer,
                 transport: Transport::Icmp,
-                port: 0,
                 target_addr: "127.0.0.1:0".parse().expect("address"),
                 timeout: Duration::from_millis(10),
             })
@@ -488,7 +487,6 @@ mod tests {
             .run(TestContext {
                 direction: Direction::ClientToServer,
                 transport: Transport::Icmp,
-                port: 0,
                 target_addr: "127.0.0.1:0".parse().expect("address"),
                 timeout: Duration::from_millis(10),
             })
@@ -543,11 +541,6 @@ mod tests {
         let packet = build_icmp_echo(14, 7, 9, &[1; 12]);
         assert!(reply_matches(&packet, 0, 14, 7, 9, None, 12));
         assert!(!reply_matches(&packet[..19], 0, 14, 7, 9, None, 12));
-    }
-
-    #[test]
-    fn has_icmp_capability_returns_bool() {
-        let _result = has_icmp_capability();
     }
 
     #[test]

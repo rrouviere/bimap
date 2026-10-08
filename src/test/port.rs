@@ -1,343 +1,155 @@
+use super::exchange::{accept, connect, echo, failure, kilobyte_payload, roundtrip};
 use crate::orchestrator::ProtocolResult;
 use crate::test::{Direction, Layer, TestContext, TestProtocol, Transport};
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tracing::{debug, trace};
+use std::time::Duration;
+use tokio::net::UdpSocket;
+use tracing::debug;
 
 pub struct OpenTest;
+pub struct KbTest;
 
 const ONE_BYTE_PAYLOAD: u8 = 0xAA;
+#[cfg(test)]
+const KB: usize = 1024;
 
-pub fn compute_sha256(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    format!("{:x}", hasher.finalize())
-}
-
-async fn tcp_open_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let mut last_err = String::new();
-    for attempt in 0..20 {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        debug!(
-            "connecting to {}:{} (timeout={}ms)",
-            target.ip(),
-            target.port(),
-            timeout.as_millis()
-        );
-        match tokio::time::timeout(timeout, TcpStream::connect(target)).await {
-            Ok(Ok(mut stream)) => {
-                match tokio::time::timeout(timeout, stream.write_all(&[ONE_BYTE_PAYLOAD])).await {
-                    Ok(Ok(())) => {
-                        let mut buf = [0u8; 1];
-                        match tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await {
-                            Ok(Ok(_)) => {
-                                if buf[0] == ONE_BYTE_PAYLOAD {
-                                    return ProtocolResult::Pass {
-                                        sent_bytes: 1,
-                                        received_bytes: 1,
-                                    };
-                                } else {
-                                    return ProtocolResult::Fail {
-                                        reason: format!(
-                                            "mismatch: sent 0x{:02x}, received 0x{:02x}",
-                                            ONE_BYTE_PAYLOAD, buf[0]
-                                        ),
-                                        sent_bytes: 1,
-                                        received_bytes: 1,
-                                    };
-                                }
-                            }
-                            Ok(Err(e)) => {
-                                return ProtocolResult::Fail {
-                                    reason: format!("read: {e}"),
-                                    sent_bytes: 1,
-                                    received_bytes: 0,
-                                };
-                            }
-                            Err(_) => {
-                                return ProtocolResult::Fail {
-                                    reason: "timeout".into(),
-                                    sent_bytes: 1,
-                                    received_bytes: 0,
-                                };
-                            }
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        return ProtocolResult::Fail {
-                            reason: format!("write: {e}"),
-                            sent_bytes: 0,
-                            received_bytes: 0,
-                        };
-                    }
-                    Err(_) => {
-                        return ProtocolResult::Fail {
-                            reason: "timeout".into(),
-                            sent_bytes: 0,
-                            received_bytes: 0,
-                        };
-                    }
-                }
-            }
-            Ok(Err(e)) => {
-                if e.kind() == std::io::ErrorKind::ConnectionRefused {
-                    last_err = "refused".into();
-                    continue;
-                } else {
-                    return ProtocolResult::Fail {
-                        reason: format!("connect: {e}"),
-                        sent_bytes: 0,
-                        received_bytes: 0,
-                    };
-                }
-            }
-            Err(_) => {
-                last_err = "timeout".into();
-                continue;
-            }
-        }
-    }
-    ProtocolResult::Fail {
-        reason: last_err,
-        sent_bytes: 0,
-        received_bytes: 0,
+async fn tcp_initiator(target: SocketAddr, payload: &[u8], timeout: Duration) -> ProtocolResult {
+    match connect(target, timeout).await {
+        Ok(mut stream) => roundtrip(&mut stream, payload, timeout).await,
+        Err(result) => result,
     }
 }
 
-async fn tcp_open_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let listener = match TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("bind: {e}"),
-            }
-        }
-    };
-
-    debug!("waiting for connection on {}", addr);
-    match tokio::time::timeout(timeout, listener.accept()).await {
-        Ok(Ok((mut stream, _addr))) => {
-            let mut buf = [0u8; 1];
-            debug!(
-                "waiting for 1 bytes from {}",
-                stream.peer_addr().map_or("?".into(), |a| a.to_string())
-            );
-            match tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await {
-                Ok(Ok(_)) => {
-                    if buf[0] != ONE_BYTE_PAYLOAD {
-                        return ProtocolResult::Fail {
-                            reason: format!(
-                                "mismatch: expected 0x{ONE_BYTE_PAYLOAD:02x}, received 0x{:02x}",
-                                buf[0]
-                            ),
-                            sent_bytes: 0,
-                            received_bytes: 1,
-                        };
-                    }
-                    debug!(
-                        "sending 1 bytes to {}",
-                        stream.peer_addr().map_or("?".into(), |a| a.to_string())
-                    );
-                    match tokio::time::timeout(timeout, stream.write_all(&buf)).await {
-                        Ok(Ok(())) => ProtocolResult::Pass {
-                            sent_bytes: 1,
-                            received_bytes: 1,
-                        },
-                        Ok(Err(e)) => ProtocolResult::Fail {
-                            reason: format!("write: {e}"),
-                            sent_bytes: 1,
-                            received_bytes: 1,
-                        },
-                        Err(_) => ProtocolResult::Fail {
-                            reason: "timeout".into(),
-                            sent_bytes: 1,
-                            received_bytes: 1,
-                        },
-                    }
-                }
-                Ok(Err(e)) => ProtocolResult::Fail {
-                    reason: format!("read: {e}"),
-                    sent_bytes: 0,
-                    received_bytes: 0,
-                },
-                Err(_) => ProtocolResult::Fail {
-                    reason: "timeout".into(),
-                    sent_bytes: 0,
-                    received_bytes: 0,
-                },
-            }
-        }
-        Ok(Err(e)) => ProtocolResult::Fail {
-            reason: format!("accept: {e}"),
-            sent_bytes: 0,
-            received_bytes: 0,
-        },
-        Err(_) => ProtocolResult::Fail {
-            reason: "timeout".into(),
-            sent_bytes: 0,
-            received_bytes: 0,
-        },
+async fn tcp_target(address: SocketAddr, payload: &[u8], timeout: Duration) -> ProtocolResult {
+    match accept(address, timeout).await {
+        Ok(mut stream) => echo(&mut stream, payload, timeout).await,
+        Err(result) => result,
     }
 }
 
-async fn udp_open_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let bind_addr = if target.is_ipv4() {
+async fn udp_initiator(target: SocketAddr, payload: &[u8], timeout: Duration) -> ProtocolResult {
+    let address = if target.is_ipv4() {
         "0.0.0.0:0"
     } else {
         "[::]:0"
     };
-    let socket = match UdpSocket::bind(bind_addr).await {
-        Ok(s) => s,
-        Err(e) => {
+    let socket = match UdpSocket::bind(address).await {
+        Ok(socket) => socket,
+        Err(error) => {
             return ProtocolResult::Error {
-                reason: format!("udp bind: {e}"),
-            };
+                reason: format!("udp bind: {error}"),
+            }
         }
     };
-
-    let mut last_err = String::new();
+    let mut reason = String::new();
+    let mut received = vec![0; payload.len() + 1];
     for attempt in 0..5 {
         if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        debug!("udp sending 1 bytes to {}:{}", target.ip(), target.port());
-        match tokio::time::timeout(timeout, socket.send_to(&[ONE_BYTE_PAYLOAD], target)).await {
+        debug!("udp sending {} bytes to {target}", payload.len());
+        match tokio::time::timeout(timeout, socket.send_to(payload, target)).await {
             Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                last_err = format!("send: {e}");
+            Ok(Err(error)) => {
+                reason = format!("send: {error}");
                 continue;
             }
             Err(_) => {
-                last_err = "send timeout".into();
+                reason = "send timeout".into();
                 continue;
             }
         }
-
-        let mut buf = [0u8; 2];
-        trace!(
-            "udp waiting for response (timeout={}ms)",
-            timeout.as_millis()
-        );
-        match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
-            Ok(Ok((1, src))) if src == target => {
-                if buf[0] == ONE_BYTE_PAYLOAD {
-                    return ProtocolResult::Pass {
-                        sent_bytes: 1,
-                        received_bytes: 1,
-                    };
-                } else {
-                    return ProtocolResult::Fail {
-                        reason: format!(
-                            "mismatch: sent 0x{:02x}, received 0x{:02x}",
-                            ONE_BYTE_PAYLOAD, buf[0]
-                        ),
-                        sent_bytes: 1,
-                        received_bytes: 1,
-                    };
+        match tokio::time::timeout(timeout, socket.recv_from(&mut received)).await {
+            Ok(Ok((length, source))) if source == target => {
+                if length != payload.len() {
+                    return failure(
+                        format!("recv len: {length} != {}", payload.len()),
+                        payload.len(),
+                        length,
+                    );
                 }
-            }
-            Ok(Ok((n, src))) => {
-                last_err = if src != target {
-                    "recv from unexpected source".into()
-                } else {
-                    format!("recv len: {n} != 1")
+                if received[..length] != *payload {
+                    return failure("mismatch", payload.len(), length);
+                }
+                return ProtocolResult::Pass {
+                    sent_bytes: payload.len() as u64,
+                    received_bytes: length as u64,
                 };
-                continue;
             }
-            Ok(Err(e)) => {
-                last_err = format!("recv: {e}");
-                continue;
-            }
-            Err(_) => {
-                last_err = "timeout".into();
-                continue;
-            }
+            Ok(Ok(_)) => reason = "recv from unexpected source".into(),
+            Ok(Err(error)) => reason = format!("recv: {error}"),
+            Err(_) => reason = "timeout".into(),
         }
     }
-    ProtocolResult::Fail {
-        reason: last_err,
-        sent_bytes: 1,
-        received_bytes: 0,
-    }
+    failure(reason, payload.len(), 0)
 }
 
-async fn udp_open_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let socket = match UdpSocket::bind(addr).await {
-        Ok(s) => s,
-        Err(e) => {
+async fn udp_target(address: SocketAddr, payload: &[u8], timeout: Duration) -> ProtocolResult {
+    let socket = match UdpSocket::bind(address).await {
+        Ok(socket) => socket,
+        Err(error) => {
             return ProtocolResult::Error {
-                reason: format!("udp bind: {e}"),
-            };
+                reason: format!("udp bind: {error}"),
+            }
         }
     };
-
-    let mut buf = [0u8; 2];
-    let mut last_err = String::new();
+    let mut received = vec![0; payload.len() + 1];
+    let mut reason = String::new();
     for _ in 0..5 {
-        trace!("udp waiting for response (timeout={}ms)", 1000u64);
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            socket.recv_from(&mut buf),
-        )
-        .await
-        {
-            Ok(Ok((n, src))) => {
-                if n != 1 {
-                    return ProtocolResult::Fail {
-                        reason: format!("recv len: {n} != 1"),
-                        sent_bytes: 0,
-                        received_bytes: 0,
-                    };
+        match tokio::time::timeout(Duration::from_secs(1), socket.recv_from(&mut received)).await {
+            Ok(Ok((length, source))) => {
+                if length != payload.len() {
+                    return failure(
+                        format!("recv len: {length} != {}", payload.len()),
+                        0,
+                        length,
+                    );
                 }
-
-                if buf[0] != ONE_BYTE_PAYLOAD {
-                    return ProtocolResult::Fail {
-                        reason: format!(
-                            "mismatch: expected 0x{ONE_BYTE_PAYLOAD:02x}, received 0x{:02x}",
-                            buf[0]
-                        ),
-                        sent_bytes: 0,
-                        received_bytes: 1,
-                    };
+                if received[..length] != *payload {
+                    return failure(
+                        "mismatch: received payload differs from expected data",
+                        0,
+                        length,
+                    );
                 }
-
-                debug!("udp sending 1 bytes to {}:{}", src.ip(), src.port());
-                match tokio::time::timeout(timeout, socket.send_to(&buf[..n], src)).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => {
-                        return ProtocolResult::Fail {
-                            reason: format!("send: {e}"),
-                            sent_bytes: 0,
-                            received_bytes: 1,
-                        };
+                match tokio::time::timeout(timeout, socket.send_to(&received[..length], source))
+                    .await
+                {
+                    Ok(Ok(_)) => {
+                        return ProtocolResult::Pass {
+                            sent_bytes: length as u64,
+                            received_bytes: length as u64,
+                        }
                     }
-                    Err(_) => {
-                        return ProtocolResult::Fail {
-                            reason: "send timeout".into(),
-                            sent_bytes: 0,
-                            received_bytes: 1,
-                        };
-                    }
+                    Ok(Err(error)) => return failure(format!("send: {error}"), 0, length),
+                    Err(_) => return failure("send timeout", 0, length),
                 }
-
-                return ProtocolResult::Pass {
-                    sent_bytes: 1,
-                    received_bytes: 1,
-                };
             }
-            Ok(Err(e)) => last_err = format!("recv: {e}"),
-            Err(_) => last_err = "recv timeout".into(),
+            Ok(Err(error)) => reason = format!("recv: {error}"),
+            Err(_) => reason = "recv timeout".into(),
         }
     }
-    ProtocolResult::Fail {
-        reason: last_err,
-        sent_bytes: 0,
-        received_bytes: 0,
+    failure(reason, 0, 0)
+}
+
+async fn run_exchange(context: TestContext, payload: &[u8]) -> ProtocolResult {
+    match (context.transport, context.direction) {
+        (Transport::Tcp, Direction::ClientToServer) => {
+            tcp_initiator(context.target_addr, payload, context.timeout).await
+        }
+        (Transport::Tcp, Direction::ServerToClient) => {
+            tcp_target(context.target_addr, payload, context.timeout).await
+        }
+        (Transport::Udp, Direction::ClientToServer) => {
+            udp_initiator(context.target_addr, payload, context.timeout).await
+        }
+        (Transport::Udp, Direction::ServerToClient) => {
+            udp_target(context.target_addr, payload, context.timeout).await
+        }
+        (Transport::Icmp, _) => ProtocolResult::Error {
+            reason: "ICMP not supported by port tests".into(),
+        },
     }
 }
 
@@ -346,402 +158,14 @@ impl TestProtocol for OpenTest {
     fn name(&self) -> &'static str {
         "open"
     }
-
     fn layer(&self) -> Layer {
         Layer::L4
     }
-
     fn transports(&self) -> &[Transport] {
         &[Transport::Tcp, Transport::Udp]
     }
-
-    async fn run(&self, ctx: TestContext) -> ProtocolResult {
-        match ctx.transport {
-            Transport::Tcp => match ctx.direction {
-                Direction::ClientToServer => tcp_open_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => tcp_open_target(ctx.target_addr, ctx.timeout).await,
-            },
-            Transport::Udp => match ctx.direction {
-                Direction::ClientToServer => udp_open_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => udp_open_target(ctx.target_addr, ctx.timeout).await,
-            },
-            Transport::Icmp => ProtocolResult::Error {
-                reason: "ICMP not supported by open test".into(),
-            },
-        }
-    }
-}
-
-pub struct KbTest;
-
-const KB: usize = 1024;
-
-fn kb_payload() -> Vec<u8> {
-    let mut data = Vec::with_capacity(KB);
-    for i in 0u8..=255 {
-        for _ in 0..4 {
-            data.push(i);
-        }
-        if data.len() >= KB {
-            break;
-        }
-    }
-    data.truncate(KB);
-    data
-}
-
-async fn tcp_1kb_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let mut last_err = String::new();
-    for attempt in 0..20 {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        debug!(
-            "connecting to {}:{} (timeout={}ms)",
-            target.ip(),
-            target.port(),
-            timeout.as_millis()
-        );
-        match tokio::time::timeout(timeout, TcpStream::connect(target)).await {
-            Ok(Ok(mut stream)) => {
-                let payload = kb_payload();
-                let payload_hash = compute_sha256(&payload);
-
-                debug!(
-                    "sending {} bytes to {}",
-                    payload.len(),
-                    stream.peer_addr().map_or("?".into(), |a| a.to_string())
-                );
-                match tokio::time::timeout(timeout, stream.write_all(&payload)).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => {
-                        return ProtocolResult::Fail {
-                            reason: format!("write: {e}"),
-                            sent_bytes: payload.len() as u64,
-                            received_bytes: 0,
-                        };
-                    }
-                    Err(_) => {
-                        return ProtocolResult::Fail {
-                            reason: "write: timeout".into(),
-                            sent_bytes: 0,
-                            received_bytes: 0,
-                        };
-                    }
-                }
-
-                let mut buf = vec![0u8; KB];
-                debug!(
-                    "waiting for {} bytes from {}",
-                    KB,
-                    stream.peer_addr().map_or("?".into(), |a| a.to_string())
-                );
-                match tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => {
-                        return ProtocolResult::Fail {
-                            reason: format!("read: {e}"),
-                            sent_bytes: KB as u64,
-                            received_bytes: 0,
-                        };
-                    }
-                    Err(_) => {
-                        return ProtocolResult::Fail {
-                            reason: "read: timeout".into(),
-                            sent_bytes: KB as u64,
-                            received_bytes: 0,
-                        };
-                    }
-                }
-
-                let recv_hash = compute_sha256(&buf);
-                if payload_hash == recv_hash {
-                    return ProtocolResult::Pass {
-                        sent_bytes: KB as u64,
-                        received_bytes: KB as u64,
-                    };
-                } else {
-                    return ProtocolResult::Fail {
-                        reason: "mismatch".into(),
-                        sent_bytes: KB as u64,
-                        received_bytes: KB as u64,
-                    };
-                }
-            }
-            Ok(Err(e)) => {
-                if e.kind() == std::io::ErrorKind::ConnectionRefused {
-                    last_err = "refused".into();
-                    continue;
-                } else {
-                    return ProtocolResult::Fail {
-                        reason: format!("connect: {e}"),
-                        sent_bytes: 0,
-                        received_bytes: 0,
-                    };
-                }
-            }
-            Err(_) => {
-                last_err = "timeout".into();
-                continue;
-            }
-        }
-    }
-    ProtocolResult::Fail {
-        reason: last_err,
-        sent_bytes: 0,
-        received_bytes: 0,
-    }
-}
-
-async fn tcp_1kb_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let listener = match TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("bind: {e}"),
-            };
-        }
-    };
-
-    debug!("waiting for connection on {}", addr);
-    let (mut stream, _) = match tokio::time::timeout(timeout, listener.accept()).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("accept: {e}"),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    };
-
-    let mut buf = vec![0u8; KB];
-    debug!(
-        "waiting for {} bytes from {}",
-        KB,
-        stream.peer_addr().map_or("?".into(), |a| a.to_string())
-    );
-    match tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("read: {e}"),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "read: timeout".into(),
-                sent_bytes: 0,
-                received_bytes: 0,
-            };
-        }
-    }
-
-    if buf != kb_payload() {
-        return ProtocolResult::Fail {
-            reason: "mismatch: received payload differs from expected 1kb data".into(),
-            sent_bytes: 0,
-            received_bytes: KB as u64,
-        };
-    }
-
-    debug!(
-        "sending {} bytes to {}",
-        buf.len(),
-        stream.peer_addr().map_or("?".into(), |a| a.to_string())
-    );
-    match tokio::time::timeout(timeout, stream.write_all(&buf)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return ProtocolResult::Fail {
-                reason: format!("write: {e}"),
-                sent_bytes: 0,
-                received_bytes: KB as u64,
-            };
-        }
-        Err(_) => {
-            return ProtocolResult::Fail {
-                reason: "write: timeout".into(),
-                sent_bytes: 0,
-                received_bytes: KB as u64,
-            };
-        }
-    }
-
-    ProtocolResult::Pass {
-        sent_bytes: KB as u64,
-        received_bytes: KB as u64,
-    }
-}
-
-async fn udp_1kb_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let bind_addr = if target.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
-    };
-    let socket = match UdpSocket::bind(bind_addr).await {
-        Ok(s) => s,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("udp bind: {e}"),
-            };
-        }
-    };
-
-    let payload = kb_payload();
-    let payload_hash = compute_sha256(&payload);
-
-    let mut last_err = String::new();
-    for attempt in 0..5 {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
-        debug!(
-            "udp sending {} bytes to {}:{}",
-            payload.len(),
-            target.ip(),
-            target.port()
-        );
-        match tokio::time::timeout(timeout, socket.send_to(&payload, target)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                last_err = format!("send: {e}");
-                continue;
-            }
-            Err(_) => {
-                last_err = "send timeout".into();
-                continue;
-            }
-        }
-
-        let mut buf = vec![0u8; KB + 1];
-        trace!(
-            "udp waiting for response (timeout={}ms)",
-            timeout.as_millis()
-        );
-        match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
-            Ok(Ok((n, src))) if src == target => {
-                if n != KB {
-                    return ProtocolResult::Fail {
-                        reason: format!("recv len: {n} != {KB}"),
-                        sent_bytes: KB as u64,
-                        received_bytes: n as u64,
-                    };
-                }
-                let recv_hash = compute_sha256(&buf[..n]);
-                if payload_hash == recv_hash {
-                    return ProtocolResult::Pass {
-                        sent_bytes: KB as u64,
-                        received_bytes: KB as u64,
-                    };
-                } else {
-                    return ProtocolResult::Fail {
-                        reason: "mismatch".into(),
-                        sent_bytes: KB as u64,
-                        received_bytes: KB as u64,
-                    };
-                }
-            }
-            Ok(Ok((_n, _src))) => {
-                last_err = "recv from unexpected source".into();
-                continue;
-            }
-            Ok(Err(e)) => {
-                last_err = format!("recv: {e}");
-                continue;
-            }
-            Err(_) => {
-                last_err = "timeout".into();
-                continue;
-            }
-        }
-    }
-    ProtocolResult::Fail {
-        reason: last_err,
-        sent_bytes: KB as u64,
-        received_bytes: 0,
-    }
-}
-
-async fn udp_1kb_target(addr: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let socket = match UdpSocket::bind(addr).await {
-        Ok(s) => s,
-        Err(e) => {
-            return ProtocolResult::Error {
-                reason: format!("udp bind: {e}"),
-            };
-        }
-    };
-
-    let mut buf = vec![0u8; KB + 1];
-    let mut last_err = String::new();
-    for _ in 0..5 {
-        trace!("udp waiting for response (timeout={}ms)", 1000u64);
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            socket.recv_from(&mut buf),
-        )
-        .await
-        {
-            Ok(Ok((n, src))) => {
-                if n != KB {
-                    return ProtocolResult::Fail {
-                        reason: format!("recv len: {n} != {KB}"),
-                        sent_bytes: 0,
-                        received_bytes: n as u64,
-                    };
-                }
-
-                if buf[..n] != kb_payload() {
-                    return ProtocolResult::Fail {
-                        reason: "mismatch: received payload differs from expected 1kb data".into(),
-                        sent_bytes: 0,
-                        received_bytes: n as u64,
-                    };
-                }
-
-                debug!("udp sending {} bytes to {}:{}", n, src.ip(), src.port());
-                match tokio::time::timeout(timeout, socket.send_to(&buf[..n], src)).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => {
-                        return ProtocolResult::Fail {
-                            reason: format!("send: {e}"),
-                            sent_bytes: 0,
-                            received_bytes: n as u64,
-                        };
-                    }
-                    Err(_) => {
-                        return ProtocolResult::Fail {
-                            reason: "send timeout".into(),
-                            sent_bytes: 0,
-                            received_bytes: n as u64,
-                        };
-                    }
-                }
-
-                return ProtocolResult::Pass {
-                    sent_bytes: KB as u64,
-                    received_bytes: KB as u64,
-                };
-            }
-            Ok(Err(e)) => last_err = format!("recv: {e}"),
-            Err(_) => last_err = "recv timeout".into(),
-        }
-    }
-    ProtocolResult::Fail {
-        reason: last_err,
-        sent_bytes: 0,
-        received_bytes: 0,
+    async fn run(&self, context: TestContext) -> ProtocolResult {
+        run_exchange(context, &[ONE_BYTE_PAYLOAD]).await
     }
 }
 
@@ -750,29 +174,14 @@ impl TestProtocol for KbTest {
     fn name(&self) -> &'static str {
         "1kb"
     }
-
     fn layer(&self) -> Layer {
         Layer::L4
     }
-
     fn transports(&self) -> &[Transport] {
         &[Transport::Tcp, Transport::Udp]
     }
-
-    async fn run(&self, ctx: TestContext) -> ProtocolResult {
-        match ctx.transport {
-            Transport::Tcp => match ctx.direction {
-                Direction::ClientToServer => tcp_1kb_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => tcp_1kb_target(ctx.target_addr, ctx.timeout).await,
-            },
-            Transport::Udp => match ctx.direction {
-                Direction::ClientToServer => udp_1kb_initiator(ctx.target_addr, ctx.timeout).await,
-                Direction::ServerToClient => udp_1kb_target(ctx.target_addr, ctx.timeout).await,
-            },
-            Transport::Icmp => ProtocolResult::Error {
-                reason: "ICMP not supported by 1kb test".into(),
-            },
-        }
+    async fn run(&self, context: TestContext) -> ProtocolResult {
+        run_exchange(context, &kilobyte_payload()).await
     }
 }
 
@@ -780,6 +189,7 @@ impl TestProtocol for KbTest {
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+    use tokio::net::{TcpListener, TcpStream};
 
     #[tokio::test]
     async fn tcp_open_target_rejects_payload_changed_in_transit() {
@@ -789,7 +199,11 @@ mod tests {
         let address = reservation.local_addr().expect("local address");
         drop(reservation);
 
-        let target = tokio::spawn(tcp_open_target(address, std::time::Duration::from_secs(1)));
+        let target = tokio::spawn(tcp_target(
+            address,
+            &[ONE_BYTE_PAYLOAD],
+            std::time::Duration::from_secs(1),
+        ));
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let mut client = TcpStream::connect(address).await.expect("connect");
         client
@@ -826,7 +240,12 @@ mod tests {
             }
         });
 
-        let result = udp_open_initiator(target, std::time::Duration::from_millis(20)).await;
+        let result = udp_initiator(
+            target,
+            &[ONE_BYTE_PAYLOAD],
+            std::time::Duration::from_millis(20),
+        )
+        .await;
         responder.abort();
         assert!(matches!(
             result,
@@ -854,7 +273,12 @@ mod tests {
             }
         });
 
-        let result = udp_1kb_initiator(target, std::time::Duration::from_millis(50)).await;
+        let result = udp_initiator(
+            target,
+            &kilobyte_payload(),
+            std::time::Duration::from_millis(50),
+        )
+        .await;
         responder.abort();
         assert!(matches!(
             result,

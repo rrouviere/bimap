@@ -96,3 +96,47 @@ async fn cli_tls_spoofed_hello_fingerprint_rejected_before_configure(
         "client must reject actual certificate before sending Configure, even when Hello advertises trusted hash");
     Ok(())
 }
+
+#[tokio::test]
+async fn cli_control_legacy_server_rejected_before_configure(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (certificate, key, fingerprint) = generate_ephemeral_cert()?;
+    let acceptor = make_tls_acceptor(certificate, key)?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(async move {
+        let (connection, _) = server_tls_accept(&acceptor, &listener).await?;
+        let mut channel = channel_from_tls_stream(connection, 0);
+        channel
+            .send(&Message::Hello {
+                version: 2,
+                fingerprint,
+            })
+            .await?;
+        Ok::<_, String>(matches!(
+            channel.recv().await,
+            Ok(Message::Configure { .. })
+        ))
+    });
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_bimap"))
+        .kill_on_drop(true)
+        .args([
+            "client",
+            "--control-server",
+            &address.to_string(),
+            "--test",
+            "open",
+            "--port-range",
+            "tcp/10000",
+        ])
+        .output();
+    let output = tokio::time::timeout(Duration::from_secs(5), output).await??;
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("server protocol version 2 does not match"),
+        "{stderr}"
+    );
+    assert!(!tokio::time::timeout(Duration::from_secs(2), server).await???);
+    Ok(())
+}

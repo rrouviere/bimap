@@ -69,15 +69,12 @@ async fn configure_ack_roundtrip() {
         fingerprint: "test".into(),
     };
     server.send(&hello).await.expect("send hello");
+    assert!(matches!(
+        client.recv().await.expect("hello"),
+        Message::Hello { .. }
+    ));
 
     let configure = Message::Configure {
-        tests: vec!["open".into()],
-        port_ranges: vec![bimap::control::msg::PortRangeSpec {
-            transport: "tcp".into(),
-            start: 10000,
-            end: 10001,
-        }],
-        bidir: false,
         target: None,
         timeout_ms: 500,
         client_version: bimap::control::msg::PROTOCOL_VERSION,
@@ -94,6 +91,10 @@ async fn configure_ack_roundtrip() {
         })
         .await
         .expect("send ack");
+    assert!(matches!(
+        client.recv().await.expect("ack"),
+        Message::Ack { ok: true, .. }
+    ));
 }
 
 #[tokio::test]
@@ -127,11 +128,9 @@ async fn full_open_test_loopback() {
         bidir: false,
         timeout_ms: 5000,
         parallel: 1,
-        server_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         target_addr: "127.0.0.1:0".parse().expect("target address"),
         json: false,
         json_export: false,
-        verbose: 0,
         quiet: false,
     };
     let client_summary = orchestrator::run_client(client, &registry, &config)
@@ -149,51 +148,66 @@ async fn full_open_test_loopback() {
 
 #[tokio::test]
 async fn server_rejects_unknown_protocol() {
-    let (mut server, mut client, _) = setup_both_channels(16011).await;
-
-    server
-        .send(&Message::Hello {
-            version: PROTOCOL_VERSION,
-            fingerprint: "test".into(),
-        })
-        .await
-        .expect("send hello");
-
-    client
-        .send(&Message::Configure {
-            tests: vec!["open".into()],
-            port_ranges: vec![bimap::control::msg::PortRangeSpec {
-                transport: "tcp".into(),
-                start: 30000,
-                end: 30000,
-            }],
-            bidir: false,
-            target: None,
-            timeout_ms: 2000,
-            client_version: bimap::control::msg::PROTOCOL_VERSION,
-            parallel: 1,
-        })
-        .await
-        .expect("send configure");
-
-    // Server should process the configure + test without hanging
+    let (server, mut client, _) = setup_both_channels(16011).await;
     let registry = build_registry();
     let server_handle =
         tokio::spawn(async move { orchestrator::run_server(server, &registry).await });
-
-    // Give server time to process configure, ack, process test, send report
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-
-    // Server should complete its loop when we send Done
-    client.send(&Message::Done).await.expect("send done");
-
-    let result = server_handle.await.expect("server join");
-    assert!(result.is_ok(), "server should complete without error");
+    client
+        .send(&Message::Configure {
+            target: None,
+            timeout_ms: 500,
+            client_version: PROTOCOL_VERSION,
+            parallel: 1,
+        })
+        .await
+        .expect("configure");
+    assert!(matches!(
+        client.recv().await.expect("ack"),
+        Message::Ack { ok: true, .. }
+    ));
+    client
+        .send(&Message::Test {
+            id: 0,
+            protocol: "nonexistent".into(),
+            transport: "tcp".into(),
+            port: 10000,
+            direction: "->".into(),
+        })
+        .await
+        .expect("unknown test");
+    let error = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle)
+        .await
+        .expect("server must reject promptly")
+        .expect("server task")
+        .expect_err("unknown protocol must be rejected");
+    assert!(error.contains("unknown protocol: nonexistent"), "{error}");
 }
 
 struct MarkedPass {
     name: &'static str,
     marker: u64,
+}
+
+#[tokio::test]
+async fn control_client_legacy_protocol_rejected() {
+    let (server, mut client, _) = setup_both_channels(16013).await;
+    let registry = build_registry();
+    let server_task =
+        tokio::spawn(async move { orchestrator::run_server(server, &registry).await });
+    client
+        .send(&Message::Configure {
+            target: None,
+            timeout_ms: 500,
+            client_version: 2,
+            parallel: 1,
+        })
+        .await
+        .expect("configure");
+    assert!(matches!(
+        client.recv().await.expect("rejection"),
+        Message::Ack { ok: false, message: Some(message) } if message.contains("protocol version 2")
+    ));
+    assert!(server_task.await.expect("server task").is_err());
 }
 
 #[async_trait]
@@ -235,9 +249,6 @@ async fn server_runs_the_protocol_named_by_each_batched_test() {
 
     client
         .send(&Message::Configure {
-            tests: vec!["alpha".into(), "beta".into()],
-            port_ranges: vec![],
-            bidir: false,
             target: Some("127.0.0.1:0".into()),
             timeout_ms: 500,
             client_version: bimap::control::msg::PROTOCOL_VERSION,

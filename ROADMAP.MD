@@ -1,88 +1,32 @@
-# Roadmap — Bimap
+# Bimap roadmap
 
-## Status: FIX & HARDEN LOOP
+Bimap's goal is to characterize how middleboxes permit and alter traffic.
+The [README](README.MD) describes the tests available today.
 
-Original release done. User reports icmp-ping + 1kb broken.
-Now in iterative fix loop: QA → Dev → User Persona → repeat until green.
+## Phase I — L4 policy characterization, plus ICMP
 
----
+Build a reliable picture of allowed transports, ports, and connection directions.
 
-## Original phase tracker (historical)
+- Make TCP/UDP and ICMP observations reproducible. Resolve reported UDP
+  flakiness and distinguish exchange failures from setup errors.
+- Present observations as a policy map, including uncertainty where failures
+  cannot establish filtering.
+- Aim to output candidate rules that match observed behavior. These describe
+  the tested paths and conditions; they do not recover the original configuration.
 
-All P1–P7 complete. Original phases shipped but tests are failing in real-world scenarios.
+Phase I is complete when repeated tests through a known policy produce consistent,
+explainable results in both directions. Existing TLS/DNS support remains
+experimental.
 
----
+## Phase II — Protocol-specific transformation detection
 
-## Current iteration plan
+First establish an extensible API for probes, observations at both endpoints,
+and comparison of what was sent with what arrived. It must support new protocols
+without rebuilding the measurement and comparison machinery for each one.
 
-### Iteration 1 — Bug fixes (version 0.1.1)
+Then expand detection to transformations such as TCP flag modification and HTTP
+middlebox behavior. Results should describe observed changes and the conditions
+that trigger them.
 
-| Step | Agent | Worktree | Deliverable | Status |
-|------|-------|----------|-------------|--------|
-| 0a | QA | `qa/icmp-ping` | Failing test reproducing icmp-ping breakage | ✅ DONE — checksum excludes payload |
-| 0b | QA | `qa/1kb` | Failing test reproducing 1kb breakage | ✅ DONE — UDP double-send in all 4 functions |
-| 0c | Dev | `fix/icmp-ping` | Fix icmp-ping, commit 91875d9 | ✅ DONE — 52/52 pass |
-| 0d | Dev | `fix/1kb` | Fix 1kb, commit 4bdcaa6 | ✅ DONE — 52/52 pass |
-| 0e | User persona | — | Validate both fixes end-to-end on real instances | ✅ DONE — 15/15 test_all pass, 7 manual spot checks all pass |
-
-### Iteration 2 — pnet_packet migration (version 0.2.0)
-
-| Step | Agent | Worktree | Deliverable | Status |
-|------|-------|----------|-------------|--------|
-| 2a | Dev | `feat/pnet-packet` | Replace manual headers with pnet_packet | ✅ DONE — commit 95ade15, -494 LOC |
-| 2b | User persona | — | Validate real-world behavior after migration | ✅ DONE — all pass. Pre-existing UDP flakiness found (no retry loop on targets), not regression |
-
-Replace `src/packet/` manual unsafe headers with `pnet_packet` crate.
-Fix: eliminate 300+ LOC of manual wire-format parsing. Reliability increase.
-
-### Iteration 3 — CI pipeline (version 0.2.1)
-
-| Step | Agent | Worktree | Deliverable | Status |
-|------|-------|----------|-------------|--------|
-| 3a | Dev | `feat/ci` | GitHub Actions — build + test + lint on push/PR | ✅ DONE — commit f80d535 |
-| 3b | User persona | — | Validate CI runs clean | ✅ DONE — all tests pass, pre-commit hook fires |
-
----
-
-### Iteration 4 — Final audit & polish (version 0.2.2)
-
-| Step | Agent | Worktree | Deliverable | Status |
-|------|-------|----------|-------------|--------|
-| 4a | Dev | `fix/audit-issues` | Convention compliance: unwrap, silent discards fixed | ✅ DONE — commit 8d29db3 |
-| 4b | User persona | — | Final real-world validation | ❌ FAIL — DNS UDP timing race detected. New iteration needed |
-
----
-
-### Iteration 5 — UDP target retry loop (version 0.2.3)
-
-| Step | Agent | Worktree | Deliverable | Status |
-|------|-------|----------|-------------|--------|
-| 5a | QA | `qa/udp-retry` | Failing test proving UDP target race | ✅ DONE — 8/10 iterations fail without fix |
-| 5b | Dev | `fix/udp-retry` | Add retry loop to UDP target recv_from | ✅ DONE — commit bd72f64 |
-| 5c | User persona | — | Final real-world validation after fix | ✅ DONE — FINAL APPROVAL. 45/45 test_all, 20/20 DNS UDP stress |
-
-### Iteration 6 — ICMP-ping uses ping command (version 0.2.4)
-
-ICMP raw sockets on modern Linux (kernel 6.1) don't reliably receive echo replies — kernel's ICMP handler consumes them before raw socket delivery. Standard ping uses `SOCK_DGRAM` + `IPPROTO_ICMP` (ping sockets) but this system has `ping_group_range = 1 0` disabling them.
-
-| Step | Agent | Worktree | Deliverable | Status |
-|------|-------|----------|-------------|--------|
-| 6a | Dev | `fix/icmp-recvloop` | Raw socket recvfrom loop (skips non-matching ICMP) | ✅ DONE — e2aff93 |
-| 6b | Dev | `fix/icmp-capabilities` | Capability probe (ping socket + raw socket fallback) | ✅ DONE — f1e747e |
-| 6c | Dev | `fix/icmp-pingsocket` | Ping socket attempt (fails on this system) | ✅ DONE — 1d9f2ca |
-| 6d | Dev | `master` | Use `ping -c 1` command via tokio::process | ✅ DONE — f7cb364 |
-| 6e | User persona | — | Validate ICMP against real server 162.38.112.67:10443 | ✅ DONE — PASS tx=13 rx=13 |
-
----
-
-## Known issues
-
-| Issue | Status | Notes |
-|-------|--------|-------|
-| ICMP-ping against remote | ✅ FIXED (f7cb364) | Uses `ping -c 1` command (raw sockets unreliable on kernel 6.1+ for echo replies) |
-| 1kb broken | ✅ FIXED (4bdcaa6) | UDP double-send eliminated |
-| Manual packet headers | ✅ FIXED (95ade15) | pnet_packet migration, -494 LOC |
-| No CI pipeline | ✅ FIXED (f80d535) | GitHub Actions on push/PR |
-| Doc inconsistency | ✅ FIXED | AGENTS.md, ARCHI.MD synced to 0.2.3 |
-| UDP target retry loop | ✅ FIXED (93acd87) | 5-attempt retry with 1000ms per attempt |
-| 1kb UDP flaky (specific ports) | OPEN | ~20% timeout on some port ranges. Rare, low priority |
+The API is a prerequisite for Phase II. Success means a new protocol can reuse it
+to expose a known transformation in a controlled middlebox test.

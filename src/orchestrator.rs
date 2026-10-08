@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
-use crate::control::msg::{Message, PortRangeSpec, TestSummary, TransferReport, PROTOCOL_VERSION};
+use crate::control::msg::{Message, TestSummary, TransferReport, PROTOCOL_VERSION};
 use crate::control::ControlChannel;
 use crate::output::{
     finish_fail_line, format_port_ranges, is_interactive, print_err, print_fail, print_fail_live,
@@ -42,15 +42,6 @@ pub struct TestEntry {
 pub enum PortRange {
     Single(u16),
     Range(u16, u16),
-}
-
-impl std::fmt::Display for PortRange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PortRange::Single(p) => write!(f, "{p}"),
-            PortRange::Range(s, e) => write!(f, "{s}-{e}"),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -106,48 +97,9 @@ pub async fn run_server(
     let mut errors = 0u32;
 
     loop {
-        // Read first message: must be Test or Done
-        let first = channel.recv().await?;
-        let (mut batch, mut done_after) = match first {
-            Message::Done => break,
-            Message::Test {
-                id,
-                protocol,
-                transport,
-                port,
-                direction,
-            } => {
-                let proto = registry
-                    .find(&protocol)
-                    .ok_or_else(|| format!("unknown protocol: {protocol}"))?;
-                let transport = Transport::from_str(&transport)
-                    .ok_or_else(|| format!("unknown transport: {transport}"))?;
-                let dir = parse_direction(&direction)?;
-                let server_dir = match dir {
-                    Direction::ClientToServer => Direction::ServerToClient,
-                    Direction::ServerToClient => Direction::ClientToServer,
-                };
-                let mut target_addr = if server_dir == Direction::ClientToServer {
-                    client_addr
-                } else {
-                    test_bind_ip.unwrap_or(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0))
-                };
-                target_addr.set_port(port);
-                let batch = vec![ServerBatchEntry {
-                    id,
-                    proto,
-                    transport,
-                    dir: server_dir,
-                    port,
-                    target_addr,
-                }];
-                (batch, false)
-            }
-            _ => return Err("unexpected message, expected Test or Done".into()),
-        };
-
-        // The client marks each batch explicitly. Inferring the boundary from
-        // a quiet period loses requests when TLS/TCP spaces out a large burst.
+        let mut batch = Vec::new();
+        let mut done_after = false;
+        // Explicit batch boundaries prevent TLS/TCP timing from dropping requests.
         loop {
             match channel.recv().await? {
                 Message::Test {
@@ -160,17 +112,16 @@ pub async fn run_server(
                     if batch.len() >= parallel {
                         return Err("batch exceeds configured parallel limit".into());
                     }
-                    let transport = Transport::from_str(&transport)
-                        .ok_or_else(|| format!("unknown transport: {transport}"))?;
                     let proto = registry
                         .find(&protocol)
                         .ok_or_else(|| format!("unknown protocol: {protocol}"))?;
-                    let dir = parse_direction(&direction)?;
-                    let server_dir = match dir {
+                    let transport = Transport::from_str(&transport)
+                        .ok_or_else(|| format!("unknown transport: {transport}"))?;
+                    let direction = match parse_direction(&direction)? {
                         Direction::ClientToServer => Direction::ServerToClient,
                         Direction::ServerToClient => Direction::ClientToServer,
                     };
-                    let mut target_addr = if server_dir == Direction::ClientToServer {
+                    let mut target_addr = if direction == Direction::ClientToServer {
                         client_addr
                     } else {
                         test_bind_ip
@@ -181,32 +132,32 @@ pub async fn run_server(
                         id,
                         proto,
                         transport,
-                        dir: server_dir,
-                        port,
+                        dir: direction,
                         target_addr,
                     });
                 }
-                Message::BatchEnd => break,
+                Message::BatchEnd if !batch.is_empty() => break,
                 Message::Done => {
                     done_after = true;
                     break;
                 }
-                _ => return Err("unexpected message while collecting batch".into()),
+                _ => return Err("unexpected message, expected Test, BatchEnd or Done".into()),
             }
         }
+        if batch.is_empty() {
+            break;
+        }
 
-        // Process batch in parallel
         let mut unordered: FuturesUnordered<_> = batch
             .into_iter()
             .map(|entry| {
                 let ctx = TestContext {
                     direction: entry.dir,
                     transport: entry.transport,
-                    port: entry.port,
                     target_addr: entry.target_addr,
                     timeout: Duration::from_millis(timeout_ms),
                 };
-                Box::pin(async move { (entry.id, run_protocol(entry.proto, ctx).await) })
+                async move { (entry.id, run_protocol(entry.proto, ctx).await) }
             })
             .collect();
 
@@ -256,11 +207,9 @@ pub struct ClientConfig {
     pub bidir: bool,
     pub timeout_ms: u64,
     pub parallel: usize,
-    pub server_addr: IpAddr,
     pub target_addr: SocketAddr,
     pub json: bool,
     pub json_export: bool,
-    pub verbose: u8,
     pub quiet: bool,
 }
 
@@ -278,7 +227,6 @@ struct ServerBatchEntry<'a> {
     proto: &'a dyn TestProtocol,
     transport: Transport,
     dir: Direction,
-    port: u16,
     target_addr: SocketAddr,
 }
 
@@ -319,11 +267,10 @@ async fn execute_batch(
             let ctx = TestContext {
                 direction: entry.direction,
                 transport: entry.transport,
-                port: entry.port,
                 target_addr,
                 timeout: Duration::from_millis(config.timeout_ms),
             };
-            Box::pin(async move { (entry.id, run_protocol(proto, ctx).await) })
+            async move { (entry.id, run_protocol(proto, ctx).await) }
         })
         .collect();
 
@@ -394,24 +341,10 @@ async fn execute_batch(
             ProtocolResult::Fail { .. } => *failed += 1,
             ProtocolResult::Error { .. } => *errors += 1,
         }
-        if config.json && !config.json_export {
-            print_result(
-                entry.id,
-                entry.test_name,
-                entry.transport_str,
-                entry.port,
-                entry.direction,
-                &result,
-                true,
-                server_error.as_deref(),
-            );
-        } else if !config.json_export {
-            match &result {
-                ProtocolResult::Pass {
-                    sent_bytes,
-                    received_bytes,
-                } => {
-                    if interactive {
+        if !config.json_export {
+            if interactive {
+                match &result {
+                    ProtocolResult::Pass { .. } => {
                         pass_map
                             .entry((
                                 entry.test_name.to_string(),
@@ -420,92 +353,45 @@ async fn execute_batch(
                             ))
                             .or_default()
                             .push(entry.port);
-                    } else if !config.quiet {
-                        print_pass(format_args!(
-                            "{} {} {} {} (tx={} rx={})",
-                            entry.test_name,
-                            entry.transport_str,
-                            entry.port,
-                            entry.direction.as_str(),
-                            sent_bytes,
-                            received_bytes
-                        ));
+                    }
+                    ProtocolResult::Fail { reason, .. } | ProtocolResult::Error { reason } => {
+                        fail_map
+                            .entry((
+                                entry.test_name.to_string(),
+                                entry.transport_str.to_string(),
+                                entry.direction.as_str().to_string(),
+                                reason.clone(),
+                            ))
+                            .or_default()
+                            .push(entry.port);
+                        let line = fail_map
+                            .iter()
+                            .map(|((protocol, transport, direction, reason), ports)| {
+                                format!(
+                                    "{protocol} {transport} {} {direction} {reason}",
+                                    format_port_ranges(ports)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("  ");
+                        print_fail_live(line);
                     }
                 }
-                ProtocolResult::Fail {
-                    reason,
-                    sent_bytes,
-                    received_bytes,
-                } => {
-                    let key = (
-                        entry.test_name.to_string(),
-                        entry.transport_str.to_string(),
-                        entry.direction.as_str().to_string(),
-                        reason.clone(),
-                    );
-                    fail_map.entry(key).or_default().push(entry.port);
-                    if interactive {
-                        let mut line = String::new();
-                        for ((tn, ts, dir, r), ports) in &fail_map {
-                            if !line.is_empty() {
-                                line.push_str("  ");
-                            }
-                            let ranges = format_port_ranges(ports);
-                            line.push_str(&format!("{tn} {ts} {ranges} {dir} {r}"));
-                        }
-                        print_fail_live(&line);
-                    } else {
-                        print_fail(format_args!(
-                            "{} {} {} {} {} (tx={} rx={})",
-                            entry.test_name,
-                            entry.transport_str,
-                            entry.port,
-                            entry.direction.as_str(),
-                            reason,
-                            sent_bytes,
-                            received_bytes
-                        ));
-                    }
-                }
-                ProtocolResult::Error { reason } => {
-                    let key = (
-                        entry.test_name.to_string(),
-                        entry.transport_str.to_string(),
-                        entry.direction.as_str().to_string(),
-                        reason.clone(),
-                    );
-                    fail_map.entry(key).or_default().push(entry.port);
-                    if interactive {
-                        let mut line = String::new();
-                        for ((tn, ts, dir, r), ports) in &fail_map {
-                            if !line.is_empty() {
-                                line.push_str("  ");
-                            }
-                            let ranges = format_port_ranges(ports);
-                            line.push_str(&format!("{tn} {ts} {ranges} {dir} {r}"));
-                        }
-                        print_fail_live(&line);
-                    } else {
-                        print_err(format_args!(
-                            "{} {} {} {} {}",
-                            entry.test_name,
-                            entry.transport_str,
-                            entry.port,
-                            entry.direction.as_str(),
-                            reason
-                        ));
-                    }
-                }
+            } else if config.json || !config.quiet || !matches!(result, ProtocolResult::Pass { .. })
+            {
+                print_result(entry, &result, config.json, server_error.as_deref());
             }
         }
-        results.push(TestEntry {
-            protocol: entry.test_name.to_string(),
-            transport: entry.transport_str.to_string(),
-            port: entry.port,
-            direction: entry.direction,
-            result,
-            server_error,
-        });
+        if config.json_export {
+            results.push(TestEntry {
+                protocol: entry.test_name.to_string(),
+                transport: entry.transport_str.to_string(),
+                port: entry.port,
+                direction: entry.direction,
+                result,
+                server_error,
+            });
+        }
     }
 
     if interactive {
@@ -554,20 +440,8 @@ pub async fn run_client(
         }
     }
 
-    let port_range_specs: Vec<PortRangeSpec> = port_ranges
-        .iter()
-        .map(|(transport, start, end)| PortRangeSpec {
-            transport: transport.clone(),
-            start: *start,
-            end: *end,
-        })
-        .collect();
-
     channel
         .send(&Message::Configure {
-            tests: config.tests.to_vec(),
-            port_ranges: port_range_specs,
-            bidir: config.bidir,
             target: Some(config.target_addr.to_string()),
             timeout_ms: config.timeout_ms,
             client_version: PROTOCOL_VERSION,
@@ -660,10 +534,8 @@ pub async fn run_client(
         }
     }
 
-    let merged = merge_into_ranges(&results);
-
     if config.json_export {
-        print_json_export(&merged, passed, failed, errors);
+        print_json_export(&merge_into_ranges(&results), passed, failed, errors);
     } else if !config.json {
         print_user_summary(passed, failed, errors);
     }
@@ -711,17 +583,7 @@ fn should_render_interactive(terminal: bool, quiet: bool, json: bool, json_expor
     terminal && !quiet && !json && !json_export
 }
 
-/// Build the consolidated PASS port-range lines to print once the live
-/// scan loop finishes.
-///
-/// In interactive mode per-port PASS lines are suppressed during the loop
-/// (they would flicker against the `\r`-overwriting fail line on the same
-/// row); passes accumulate silently in `pass_map` instead. After the loop
-/// `finish_fail_line` finalises the fail row, then this helper turns the
-/// collected pass groups into one line per group: `"<test> <transport>
-/// <port-ranges> <direction>"`. Fails are NOT included here — they are
-/// already visible on the live fail row above, and reprinting them was the
-/// duplication bug. callers should `print_pass` each returned line.
+// Passing lines wait until the live failure row finishes to avoid overwriting it.
 fn consolidated_pass_lines(pass_map: &HashMap<(String, String, String), Vec<u16>>) -> Vec<String> {
     pass_map
         .iter()
@@ -738,13 +600,9 @@ fn protocol_result_to_report(id: u32, result: &ProtocolResult) -> Message {
             received_bytes,
         } => Message::Report {
             id,
-            sent: Some(TransferReport {
-                bytes: *sent_bytes,
-                sha256: String::new(),
-            }),
+            sent: Some(TransferReport { bytes: *sent_bytes }),
             received: Some(TransferReport {
                 bytes: *received_bytes,
-                sha256: String::new(),
             }),
             error: None,
         },
@@ -754,13 +612,9 @@ fn protocol_result_to_report(id: u32, result: &ProtocolResult) -> Message {
             received_bytes,
         } => Message::Report {
             id,
-            sent: Some(TransferReport {
-                bytes: *sent_bytes,
-                sha256: String::new(),
-            }),
+            sent: Some(TransferReport { bytes: *sent_bytes }),
             received: Some(TransferReport {
                 bytes: *received_bytes,
-                sha256: String::new(),
             }),
             error: Some(reason.clone()),
         },
@@ -773,17 +627,20 @@ fn protocol_result_to_report(id: u32, result: &ProtocolResult) -> Message {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn print_result(
-    id: u32,
-    protocol: &str,
-    transport: &str,
-    port: u16,
-    direction: Direction,
+    entry: &BatchEntry<'_>,
     result: &ProtocolResult,
     json: bool,
     server_error: Option<&str>,
 ) {
+    let BatchEntry {
+        id,
+        test_name: protocol,
+        transport_str: transport,
+        port,
+        direction,
+        ..
+    } = entry;
     if json {
         let (status, reason, tx, rx) = match result {
             ProtocolResult::Pass {
@@ -965,15 +822,6 @@ fn print_json_export(merged: &[MergedEntry], passed: u32, failed: u32, errors: u
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn protocol_result_sizes() {
-        let r = ProtocolResult::Pass {
-            sent_bytes: 1,
-            received_bytes: 1,
-        };
-        assert!(matches!(r, ProtocolResult::Pass { .. }));
-    }
 
     #[test]
     fn parse_direction_valid() {

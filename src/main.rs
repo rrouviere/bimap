@@ -286,11 +286,9 @@ fn main() {
                     bidir,
                     timeout_ms: timeout,
                     parallel,
-                    server_addr: control_target.ip(),
                     target_addr,
                     json,
                     json_export,
-                    verbose,
                     quiet,
                 };
 

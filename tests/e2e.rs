@@ -1,13 +1,10 @@
-use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+mod support;
+
+use std::process::Command;
 
 const E2E_SERVER_PORT: u16 = 14333;
-const E2E_FINGERPRINT_PORT: u16 = 14434;
-const E2E_FULL_OPEN_PORT: u16 = 14435;
-const E2E_UNKNOWN_PORT: u16 = 14436;
 const E2E_TARGET_HOSTNAME_PORT: u16 = 14437;
 const E2E_IPV6_CTRL_PORT: u16 = 14438;
-const E2E_HOSTNAME_SERVER_PORT: u16 = 14439;
 
 #[test]
 fn binary_help_output() {
@@ -30,38 +27,6 @@ fn binary_version_output() {
 }
 
 #[test]
-fn server_prints_fingerprint() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args([
-            "server",
-            "--bind",
-            &format!("127.0.0.1:{E2E_FINGERPRINT_PORT}"),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn server");
-
-    std::thread::sleep(std::time::Duration::from_millis(1000));
-
-    let stderr = BufReader::new(child.stderr.take().unwrap());
-    let mut found_fingerprint = false;
-    for line in stderr.lines().map_while(Result::ok) {
-        if line.contains("fingerprint") {
-            found_fingerprint = true;
-            break;
-        }
-    }
-
-    child.kill().ok();
-    child.wait().ok();
-    assert!(
-        found_fingerprint,
-        "server should print fingerprint on stderr"
-    );
-}
-
-#[test]
 fn client_no_tests_lists_tests() {
     let output = Command::new(env!("CARGO_BIN_EXE_bimap"))
         .args(["client", "--server", "127.0.0.1", "--port-range", "tcp/1-1"])
@@ -73,12 +38,14 @@ fn client_no_tests_lists_tests() {
 }
 
 #[test]
-fn client_no_port_range_is_config_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args(["client", "--server", "127.0.0.1", "--test", "open"])
-        .output()
-        .expect("run client");
-    assert_eq!(output.status.code(), Some(2));
+fn l4_tests_without_port_ranges_are_config_errors() {
+    for protocol in ["open", "1kb"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_bimap"))
+            .args(["client", "--server", "127.0.0.1", "--test", protocol])
+            .output()
+            .expect("run client");
+        assert_eq!(output.status.code(), Some(2));
+    }
 }
 
 #[test]
@@ -100,93 +67,138 @@ fn client_connection_refused_is_error_3() {
         .output()
         .expect("run client");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.code() == Some(3) || stderr.contains("cannot connect"),
-        "exit code: {:?}, stderr: {}",
-        output.status.code(),
-        stderr
-    );
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    assert!(stderr.contains("cannot connect"), "{stderr}");
 }
 
 #[test]
-fn full_open_e2e_loopback() {
-    let mut server = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args([
-            "server",
-            "--bind",
-            &format!("127.0.0.1:{E2E_FULL_OPEN_PORT}"),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn server");
-
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-
-    let client_output = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args([
-            "client",
-            "--server",
-            "127.0.0.1",
-            "--port",
-            &E2E_FULL_OPEN_PORT.to_string(),
+fn protocols_roundtrip_and_reverse_on_one_server() {
+    let server = support::Server::start();
+    let tcp = format!("tcp/{}", support::available_port());
+    let udp = format!("udp/{}", support::available_port());
+    for bidirectional in [false, true] {
+        let mut arguments = vec![
             "--test",
             "open",
+            "--test",
+            "1kb",
+            "--test",
+            "tls",
+            "--test",
+            "dns",
             "--port-range",
-            "tcp/35000-35001",
+            &tcp,
+            "--port-range",
+            &udp,
             "--timeout",
             "3000",
-        ])
-        .output()
-        .expect("run client");
+            "--json",
+            "--fingerprint",
+            &server.fingerprint,
+        ];
+        if bidirectional {
+            arguments.push("--bidir");
+        }
+        let output = server.client(&arguments).output();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let records: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+            .expect("UTF-8 results")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("JSON result"))
+            .collect();
+        let mut observed = std::collections::BTreeSet::new();
+        for record in &records {
+            assert_eq!(record["status"], "pass", "{record}");
+            let protocol = record["protocol"].as_str().expect("protocol");
+            let transport = record["transport"].as_str().expect("transport");
+            let direction = record["direction"].as_str().expect("direction");
+            assert!(
+                observed.insert((protocol, transport, direction)),
+                "duplicate result: {record}"
+            );
+            match protocol {
+                "open" => {
+                    assert_eq!(record["tx"], 1);
+                    assert_eq!(record["rx"], 1);
+                }
+                "1kb" | "tls" => {
+                    assert_eq!(record["tx"], 1024);
+                    assert_eq!(record["rx"], 1024);
+                }
+                "dns" => {
+                    assert!(record["tx"].as_u64().expect("tx") > 0);
+                    assert!(record["rx"].as_u64().expect("rx") > 0);
+                }
+                _ => panic!("unexpected protocol: {record}"),
+            }
+        }
+        let directions: &[&str] = if bidirectional {
+            &["->", "<-"]
+        } else {
+            &["->"]
+        };
+        let expected: std::collections::BTreeSet<_> = [
+            ("open", "tcp"),
+            ("open", "udp"),
+            ("1kb", "tcp"),
+            ("1kb", "udp"),
+            ("tls", "tcp"),
+            ("dns", "tcp"),
+            ("dns", "udp"),
+        ]
+        .into_iter()
+        .flat_map(|(protocol, transport)| {
+            directions
+                .iter()
+                .map(move |direction| (protocol, transport, *direction))
+        })
+        .collect();
+        assert_eq!(observed, expected);
+    }
+}
 
-    server.kill().ok();
-    server.wait().ok();
-
-    let stdout = String::from_utf8_lossy(&client_output.stdout);
-    let stderr = String::from_utf8_lossy(&client_output.stderr);
-
-    assert!(
-        stdout.contains("PASS") || stderr.contains("passed"),
-        "stdout: {stdout}\nstderr: {stderr}"
+#[test]
+fn open_tcp_server_killed_during_scan_exits_connection_error() {
+    let mut server = support::Server::start();
+    let first_port = support::available_port();
+    let ports = format!("tcp/{first_port}-{}", first_port.saturating_add(31));
+    let client = server.client(&[
+        "--test",
+        "open",
+        "--port-range",
+        &ports,
+        "--timeout",
+        "3000",
+        "--parallel",
+        "1",
+        "--json",
+    ]);
+    server.wait_for("waiting for connection on");
+    server.process.0.kill().expect("kill active server");
+    server.process.0.wait().expect("reap server");
+    let output = client.output();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
 #[test]
-fn unknown_test_name_exit_1_or_3() {
-    let mut server = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args(["server", "--bind", &format!("127.0.0.1:{E2E_UNKNOWN_PORT}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn server");
-
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-
-    let output = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args([
-            "client",
-            "--server",
-            "127.0.0.1",
-            "--port",
-            &E2E_UNKNOWN_PORT.to_string(),
-            "--test",
-            "nonexistent",
-            "--port-range",
-            "tcp/1-1",
-            "--timeout",
-            "1000",
-        ])
-        .output()
-        .expect("run client");
-
-    server.kill().ok();
-    server.wait().ok();
-    let code = output.status.code().unwrap_or(-1);
-    assert!(
-        code == 1 || code == 3,
-        "exit code should be 1 or 3, got {code}"
-    );
+fn unknown_test_name_reports_error() {
+    let server = support::Server::start();
+    let output = server
+        .client(&["--test", "nonexistent", "--port-range", "tcp/10000"])
+        .output();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    assert!(stderr.contains("unknown protocol: nonexistent"), "{stderr}");
 }
 
 #[test]
@@ -229,23 +241,6 @@ fn icmp_with_wrong_port_range_auto_adds_icmp() {
         .expect("run client");
     assert_ne!(output.status.code(), Some(2), "should not be config error");
     assert_eq!(output.status.code(), Some(3), "should be connection error");
-}
-
-#[test]
-fn l4_test_without_port_range_is_config_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args([
-            "client",
-            "--server",
-            "127.0.0.1",
-            "--test",
-            "1kb",
-            "--timeout",
-            "500",
-        ])
-        .output()
-        .expect("run client");
-    assert_eq!(output.status.code(), Some(2));
 }
 
 #[test]
@@ -302,47 +297,28 @@ fn control_server_ipv6_bracket_notation() {
 
 #[test]
 fn server_and_client_with_hostnames_e2e() {
-    let mut server = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args([
-            "server",
-            "--bind",
-            &format!("localhost:{E2E_HOSTNAME_SERVER_PORT}"),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn server");
-
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-
-    let client_output = Command::new(env!("CARGO_BIN_EXE_bimap"))
-        .args([
-            "client",
-            "--server",
-            "localhost",
-            "--port",
-            &E2E_HOSTNAME_SERVER_PORT.to_string(),
+    let server = support::Server::start_on("localhost");
+    let ports = format!("tcp/{}", support::available_port());
+    let output = server
+        .client(&[
             "--target",
             "localhost",
             "--test",
             "open",
             "--port-range",
-            "tcp/35002-35003",
+            &ports,
             "--timeout",
             "3000",
+            "--json",
         ])
-        .output()
-        .expect("run client");
-
-    server.kill().ok();
-    server.wait().ok();
-
-    let stdout = String::from_utf8_lossy(&client_output.stdout);
-    let stderr = String::from_utf8_lossy(&client_output.stderr);
-
-    assert_eq!(
-        client_output.status.code().unwrap_or(-1),
-        0,
-        "hostname e2e should exit 0: stdout={stdout} stderr={stderr}"
+        .output();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON result");
+    assert_eq!(result["status"], "pass");
+    assert_eq!(result["tx"], 1);
+    assert_eq!(result["rx"], 1);
 }

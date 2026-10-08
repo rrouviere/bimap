@@ -1,18 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
-
-fn default_timeout() -> u64 {
-    5000
-}
-
-fn default_version() -> u32 {
-    PROTOCOL_VERSION
-}
-
-fn default_parallel() -> usize {
-    100
-}
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -22,16 +10,10 @@ pub enum Message {
         fingerprint: String,
     },
     Configure {
-        tests: Vec<String>,
-        port_ranges: Vec<PortRangeSpec>,
-        bidir: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         target: Option<String>,
-        #[serde(default = "default_timeout")]
         timeout_ms: u64,
-        #[serde(default = "default_version")]
         client_version: u32,
-        #[serde(default = "default_parallel")]
         parallel: usize,
     },
     Ack {
@@ -61,16 +43,8 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortRangeSpec {
-    pub transport: String,
-    pub start: u16,
-    pub end: u16,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferReport {
     pub bytes: u64,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +57,30 @@ pub struct TestSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_json_serialization_contains_only_used_fields() {
+        for expected in [
+            serde_json::json!({"type":"configure","target":"127.0.0.1:0","timeout_ms":500,"client_version":PROTOCOL_VERSION,"parallel":1}),
+            serde_json::json!({"type":"report","id":1,"sent":{"bytes":1},"received":{"bytes":1}}),
+        ] {
+            let message: Message = serde_json::from_value(expected.clone()).expect("message");
+            assert_eq!(serde_json::to_value(message).expect("serialize"), expected);
+        }
+    }
+
+    #[test]
+    fn control_json_configuration_requires_explicit_settings() {
+        let complete = serde_json::json!({"type":"configure","target":"127.0.0.1:0","timeout_ms":500,"client_version":PROTOCOL_VERSION,"parallel":1});
+        for field in ["timeout_ms", "client_version", "parallel"] {
+            let mut incomplete = complete.clone();
+            incomplete.as_object_mut().expect("object").remove(field);
+            assert!(
+                serde_json::from_value::<Message>(incomplete).is_err(),
+                "missing {field} must be rejected"
+            );
+        }
+    }
 
     #[test]
     fn hello_roundtrip() {
@@ -113,40 +111,26 @@ mod tests {
 
     #[test]
     fn configure_roundtrip() {
-        let msg = Message::Configure {
-            tests: vec!["open".into(), "dns".into()],
-            port_ranges: vec![PortRangeSpec {
-                transport: "tcp".into(),
-                start: 1,
-                end: 1024,
-            }],
-            bidir: false,
-            target: None,
+        let message = Message::Configure {
+            target: Some("127.0.0.1:0".into()),
             timeout_ms: 500,
             client_version: PROTOCOL_VERSION,
             parallel: 100,
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: Message = serde_json::from_str(&json).unwrap();
-        match back {
+        let json = serde_json::to_string(&message).expect("serialize");
+        match serde_json::from_str::<Message>(&json).expect("deserialize") {
             Message::Configure {
-                tests,
-                port_ranges,
-                bidir,
                 target,
                 timeout_ms,
                 client_version,
                 parallel,
             } => {
-                assert_eq!(tests.len(), 2);
-                assert_eq!(port_ranges[0].transport, "tcp");
-                assert!(!bidir);
-                assert!(target.is_none());
+                assert_eq!(target.as_deref(), Some("127.0.0.1:0"));
                 assert_eq!(timeout_ms, 500);
                 assert_eq!(client_version, PROTOCOL_VERSION);
                 assert_eq!(parallel, 100);
             }
-            _ => panic!("wrong variant"),
+            _ => panic!("expected Configure"),
         }
     }
 
@@ -154,14 +138,8 @@ mod tests {
     fn report_roundtrip() {
         let msg = Message::Report {
             id: 42,
-            sent: Some(TransferReport {
-                bytes: 1024,
-                sha256: "abcdef".into(),
-            }),
-            received: Some(TransferReport {
-                bytes: 1024,
-                sha256: "abcdef".into(),
-            }),
+            sent: Some(TransferReport { bytes: 1024 }),
+            received: Some(TransferReport { bytes: 1024 }),
             error: None,
         };
         let json = serde_json::to_string(&msg).unwrap();

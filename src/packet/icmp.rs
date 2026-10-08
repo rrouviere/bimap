@@ -27,15 +27,6 @@ pub const ALL_ICMP_TYPES: &[(u8, &str)] = &[
     (42, "extended-echo"),
 ];
 
-pub fn type_name(icmp_type: u8) -> &'static str {
-    for &(t, name) in ALL_ICMP_TYPES {
-        if t == icmp_type {
-            return name;
-        }
-    }
-    "unknown"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,17 +36,5 @@ mod tests {
         for &(t, name) in ALL_ICMP_TYPES {
             assert!(!name.is_empty(), "type {t} has no name");
         }
-    }
-
-    #[test]
-    fn type_name_known_types() {
-        assert_eq!(type_name(8), "echo-request");
-        assert_eq!(type_name(0), "echo-reply");
-        assert_eq!(type_name(13), "timestamp");
-    }
-
-    #[test]
-    fn type_name_unknown() {
-        assert_eq!(type_name(99), "unknown");
     }
 }

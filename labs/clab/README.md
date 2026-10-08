@@ -1,24 +1,22 @@
-# bimap firewall discovery demo
+# Bimap firewall policy demo
 
 This Containerlab topology puts a client and a target on opposite sides of a
-stateful nftables firewall. A bimap scan probes TCP ports 1–1024 from the
-client and identifies the permitted services: SSH (22), HTTP (80), and HTTPS
-(443).
+stateful nftables firewall. A Bimap scan tests 1 KB exchanges on TCP ports
+1–1024 and discovers that ports 22, 80, and 443 permit the exchange.
+Bimap supplies the responders; no SSH, HTTP, or HTTPS service is needed.
 
 ```
 client ── 10.0.0.0/24 ── firewall ── 10.0.1.0/24 ── target
 ```
 
-The demo uses three equal, vertical tmux panes labelled `client`, `firewall`,
-and `target`. The target pane runs bimap's control server, the client pane
-enumerates the policy, and the firewall pane shows the live nftables rules and
-packet counters.
+The three tmux panes show the client scan, firewall rules and counters, and
+target server.
 
 ## Requirements
 
 - Docker
 - [Containerlab](https://containerlab.dev/install/)
-- tmux and asciinema
+- tmux; asciinema for recording
 - Rust toolchain
 
 Build bimap and open the interactive three-pane lab:
@@ -44,9 +42,8 @@ Generate the checked-in asciicast from a live run:
 ./labs/clab/demo-record.sh
 ```
 
-The script deploys the topology if needed, opens the same three-pane layout,
-starts the server, runs the scan, refreshes firewall counters, and tears down
-the lab if it deployed it. Pass a path to save a separate recording:
+The script runs the scan and tears down the lab if it deployed it.
+Pass a path to save a separate recording:
 
 ```sh
 ./labs/clab/demo-record.sh /tmp/bimap-demo.cast
@@ -54,8 +51,7 @@ the lab if it deployed it. Pass a path to save a separate recording:
 
 ![Bimap scanning TCP ports 1–1024 through a firewall](demo.gif)
 
-The animation plays directly in GitHub's README. The source recording is
-[demo.cast](demo.cast); [demo.mp4](demo.mp4) provides video playback.
+Source: [demo.cast](demo.cast). Video: [demo.mp4](demo.mp4).
 
 After recording, regenerate both media files with
 [agg](https://docs.asciinema.org/manual/agg/installation/), FFmpeg, and Python 3:
@@ -63,9 +59,6 @@ After recording, regenerate both media files with
 ```sh
 ./labs/clab/demo-render.sh
 ```
-
-The renderer uses the local cast, preserves its timing, and holds the final
-scan results instead of the blank screen produced when tmux detaches.
 
 ## Firewall policy
 
@@ -80,16 +73,3 @@ scan results instead of the blank screen produced when tmux detaches.
 
 The recorded scan covers ports 1–1024 and discovers TCP 22, 80, and 443. The
 firewall permits the control channel separately from the tested range.
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `bimap.clab.yml` | Three-node topology and point-to-point links. |
-| `demo.tmux.sh` | Interactive client, firewall, and target tmux layout. |
-| `demo-record.sh` | Automated live scan and asciinema recording. |
-| `demo-render.sh` | Convert the asciicast to GitHub-ready GIF and MP4 files. |
-| `demo.cast` | Latest generated asciicast. |
-| `demo.gif` | Animation embedded in the READMEs. |
-| `demo.mp4` | H.264 video of the same recording. |
-| `firewall.nft` | Stateful nftables policy loaded by Containerlab. |

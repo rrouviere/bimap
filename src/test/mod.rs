@@ -4,12 +4,12 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 pub mod dns;
+mod exchange;
 pub mod icmp;
 pub mod port;
 pub mod tls_test;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum Layer {
     L3,
     L4,
@@ -17,7 +17,6 @@ pub enum Layer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum Transport {
     Tcp,
     Udp,
@@ -25,7 +24,6 @@ pub enum Transport {
 }
 
 impl Transport {
-    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             Transport::Tcp => "tcp",
@@ -34,7 +32,7 @@ impl Transport {
         }
     }
 
-    #[allow(dead_code, clippy::should_implement_trait)]
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "tcp" => Some(Transport::Tcp),
@@ -63,16 +61,13 @@ impl Direction {
 pub struct TestContext {
     pub direction: Direction,
     pub transport: Transport,
-    pub port: u16,
     pub target_addr: SocketAddr,
     pub timeout: Duration,
 }
 
 #[async_trait]
-#[allow(dead_code)]
 pub trait TestProtocol: Send + Sync {
     fn name(&self) -> &'static str;
-    #[allow(dead_code)]
     fn layer(&self) -> Layer;
     fn transports(&self) -> &[Transport];
 
@@ -101,15 +96,8 @@ impl TestRegistry {
             .map(|p| p.as_ref())
     }
 
-    #[allow(dead_code)]
-    #[allow(dead_code)]
     pub fn names(&self) -> Vec<&'static str> {
         self.protocols.iter().map(|p| p.name()).collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.protocols.is_empty()
     }
 }
 

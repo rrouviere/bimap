@@ -126,11 +126,9 @@ fn mock_config() -> ClientConfig {
         bidir: false,
         timeout_ms: 100,
         parallel: 4,
-        server_addr: "127.0.0.1".parse().expect("IP"),
         target_addr: "127.0.0.1:0".parse().expect("target address"),
         json: false,
         json_export: true,
-        verbose: 0,
         quiet: true,
     }
 }

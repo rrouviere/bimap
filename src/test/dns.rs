@@ -1,3 +1,4 @@
+use super::exchange::connect;
 use crate::orchestrator::ProtocolResult;
 use crate::packet::dns;
 use crate::test::{Direction, Layer, TestContext, TestProtocol, Transport};
@@ -5,7 +6,7 @@ use async_trait::async_trait;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, UdpSocket};
 use tracing::{debug, trace};
 
 pub struct DnsTest;
@@ -112,24 +113,9 @@ async fn dns_udp_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
 }
 
 async fn dns_tcp_initiator(target: SocketAddr, timeout: std::time::Duration) -> ProtocolResult {
-    let mut stream = loop {
-        debug!("dns tcp connecting to {}:{}", target.ip(), target.port());
-        match tokio::time::timeout(timeout, TcpStream::connect(target)).await {
-            Ok(Ok(s)) => break s,
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            Ok(Err(e)) => {
-                return ProtocolResult::Fail {
-                    reason: format!("connect: {e}"),
-                    sent_bytes: 0,
-                    received_bytes: 0,
-                };
-            }
-            Err(_) => {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
+    let mut stream = match connect(target, timeout).await {
+        Ok(stream) => stream,
+        Err(result) => return result,
     };
 
     let query_bytes = match dns::build_dns_query("bimap.test", next_query_id()) {
@@ -203,7 +189,7 @@ async fn dns_tcp_initiator(target: SocketAddr, timeout: std::time::Duration) -> 
     }
 
     let response_len = u16::from_be_bytes(len_buf) as usize;
-    if response_len == 0 || response_len > 65535 {
+    if response_len == 0 {
         return ProtocolResult::Fail {
             reason: "dns-malformed: bad length".into(),
             sent_bytes: framed_len,
@@ -363,7 +349,7 @@ async fn dns_tcp_target(addr: SocketAddr, timeout: std::time::Duration) -> Proto
     }
 
     let query_len = u16::from_be_bytes(len_buf) as usize;
-    if query_len == 0 || query_len > 65535 {
+    if query_len == 0 {
         return ProtocolResult::Fail {
             reason: format!("invalid query length: {query_len}"),
             sent_bytes: 0,
@@ -491,7 +477,6 @@ mod tests {
             DnsTest.run(TestContext {
                 direction: Direction::ClientToServer,
                 transport: Transport::Tcp,
-                port: address.port(),
                 target_addr: address,
                 timeout: std::time::Duration::from_millis(50),
             }),
@@ -509,7 +494,6 @@ mod tests {
                 .run(TestContext {
                     direction: Direction::ServerToClient,
                     transport: Transport::Udp,
-                    port: address.port(),
                     target_addr: address,
                     timeout: std::time::Duration::from_millis(500),
                 })
@@ -519,7 +503,6 @@ mod tests {
             .run(TestContext {
                 direction: Direction::ClientToServer,
                 transport: Transport::Udp,
-                port: address.port(),
                 target_addr: address,
                 timeout: std::time::Duration::from_millis(500),
             })
