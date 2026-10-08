@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 fn default_timeout() -> u64 {
     5000
@@ -46,6 +46,7 @@ pub enum Message {
         port: u16,
         direction: String,
     },
+    BatchEnd,
     Report {
         id: u32,
         sent: Option<TransferReport>,
@@ -86,7 +87,7 @@ mod tests {
     #[test]
     fn hello_roundtrip() {
         let msg = Message::Hello {
-            version: 1,
+            version: PROTOCOL_VERSION,
             fingerprint: "sha256:deadbeef".into(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -96,11 +97,18 @@ mod tests {
                 version,
                 fingerprint,
             } => {
-                assert_eq!(version, 1);
+                assert_eq!(version, PROTOCOL_VERSION);
                 assert_eq!(fingerprint, "sha256:deadbeef");
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn batch_end_roundtrip() {
+        let json = serde_json::to_string(&Message::BatchEnd).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Message::BatchEnd));
     }
 
     #[test]

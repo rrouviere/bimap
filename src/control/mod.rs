@@ -36,7 +36,8 @@ impl ControlChannel {
         self.writer
             .write_all(&json)
             .await
-            .map_err(|e| format!("write: {e}"))
+            .map_err(|e| format!("write: {e}"))?;
+        self.writer.flush().await.map_err(|e| format!("flush: {e}"))
     }
 
     pub async fn recv(&mut self) -> Result<Message, String> {

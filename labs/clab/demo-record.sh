@@ -113,7 +113,7 @@ drive_demo() {
 
   sleep 1
   tmux send-keys -t "$client_pane" C-m
-  for _ in $(seq 1 600); do
+  for _ in $(seq 1 1800); do
     if tmux capture-pane -t "$client_pane" -p | grep -q 'passed, .*failed, 0 errors'; then
       break
     fi
@@ -126,8 +126,9 @@ drive_demo() {
   local scan_output
   scan_output=$(tmux capture-pane -t "$client_pane" -p -S -)
   if ! grep -q 'PASS 1kb tcp 22,80' <<<"$scan_output" \
-    || ! grep -q '2 passed, 98 failed, 0 errors' <<<"$scan_output"; then
-    echo "The scan completed, but it did not reveal the expected TCP 22/80 policy." >&2
+    || ! grep -q 'PASS 1kb tcp 443' <<<"$scan_output" \
+    || ! grep -q '3 passed, 1021 failed, 0 errors' <<<"$scan_output"; then
+    echo "The scan completed, but it did not reveal the expected TCP 22/80/443 policy." >&2
     return 1
   fi
 

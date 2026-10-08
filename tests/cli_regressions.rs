@@ -1,5 +1,5 @@
 use bimap::control::channel_from_tls_stream;
-use bimap::control::msg::Message;
+use bimap::control::msg::{Message, PROTOCOL_VERSION};
 use bimap::control::tls::{generate_ephemeral_cert, make_tls_acceptor, server_tls_accept};
 use std::process::Command;
 use std::time::Duration;
@@ -59,7 +59,7 @@ async fn cli_tls_spoofed_hello_fingerprint_rejected_before_configure(
         let mut channel = channel_from_tls_stream(connection, 0);
         if channel
             .send(&Message::Hello {
-                version: 1,
+                version: PROTOCOL_VERSION,
                 fingerprint: advertised,
             })
             .await

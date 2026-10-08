@@ -11,8 +11,8 @@
 #   client:eth1 ──── firewall:eth1      firewall:eth2 ──── target:eth1
 #   10.0.0.2/24      10.0.0.1/24        10.0.1.1/24        10.0.1.2/24
 #
-# A bimap forward scan (client→target, ports 1-100) reveals that only
-# tcp/22 and tcp/80 pass; every other port hits the policy drop.
+# A bimap forward scan (client→target, ports 1-1024) reveals that only
+# tcp/22, tcp/80, and tcp/443 pass; every other port hits the policy drop.
 #
 # Implementation notes:
 #   - debian:trixie-slim ships without `ip` and `nft`, so each container's first

@@ -1,5 +1,5 @@
 use bimap::cli::{parse, parse_port_ranges, Command};
-use bimap::control::msg::Message;
+use bimap::control::msg::{Message, PROTOCOL_VERSION};
 use bimap::output;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::process;
@@ -90,7 +90,7 @@ fn main() {
 
                     if let Err(e) = channel
                         .send(&Message::Hello {
-                            version: 1,
+                            version: PROTOCOL_VERSION,
                             fingerprint: fingerprint.clone(),
                         })
                         .await
@@ -253,9 +253,17 @@ fn main() {
 
                 let hello = match channel.recv().await {
                     Ok(Message::Hello {
-                        version: _,
+                        version,
                         fingerprint: fp,
-                    }) => fp,
+                    }) => {
+                        if version != PROTOCOL_VERSION {
+                            error!(
+                                "server protocol version {version} does not match client version {PROTOCOL_VERSION}"
+                            );
+                            return 3;
+                        }
+                        fp
+                    }
                     Ok(_) => {
                         error!("unexpected message from server");
                         return 3;

@@ -229,6 +229,10 @@ async fn open_tcp_parallel_server_error_overrides_local_pass() {
         let Message::Test { id, .. } = server.recv().await.expect("test") else {
             panic!("expected test")
         };
+        assert!(matches!(
+            server.recv().await.expect("batch end"),
+            Message::BatchEnd
+        ));
         server
             .send(&Message::Report {
                 id,

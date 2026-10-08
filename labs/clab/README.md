@@ -1,9 +1,9 @@
 # bimap firewall discovery demo
 
 This Containerlab topology puts a client and a target on opposite sides of a
-stateful nftables firewall. A bimap scan probes TCP ports 1–100 from the
-client and identifies the two services the firewall permits: SSH (22) and
-HTTP (80).
+stateful nftables firewall. A bimap scan probes TCP ports 1–1024 from the
+client and identifies the permitted services: SSH (22), HTTP (80), and HTTPS
+(443).
 
 ```
 client ── 10.0.0.0/24 ── firewall ── 10.0.1.0/24 ── target
@@ -29,8 +29,8 @@ cargo build --release
 ```
 
 In the target pane, press Enter to start the bimap server. Then press Enter in
-the client pane to scan TCP ports 1–100. The firewall pane is ready to show the
-active rules. Detach with `Ctrl-B d`; stop the topology with:
+the client pane to scan TCP ports 1–1024. The firewall pane is ready to show
+the active rules. Detach with `Ctrl-B d`; stop the topology with:
 
 ```sh
 containerlab destroy -t labs/clab/bimap.clab.yml
@@ -66,8 +66,8 @@ terminal capture of the tmux session; the local copy is `labs/clab/demo.cast`.
 | Target → client | Allow all TCP |
 | Otherwise | Drop |
 
-The recorded scan covers ports 1–100, so the client discovers TCP 22 and 80.
-The firewall permits the control channel separately from the tested range.
+The recorded scan covers ports 1–1024 and discovers TCP 22, 80, and 443. The
+firewall permits the control channel separately from the tested range.
 
 ## Files
 

@@ -4,7 +4,9 @@ use bimap::control::tls::{
     server_tls_accept,
 };
 use bimap::control::{
-    channel_from_client_tls, channel_from_tls_stream, msg::Message, ControlChannel,
+    channel_from_client_tls, channel_from_tls_stream,
+    msg::{Message, PROTOCOL_VERSION},
+    ControlChannel,
 };
 use bimap::orchestrator;
 use bimap::orchestrator::ProtocolResult;
@@ -41,7 +43,7 @@ async fn hello_roundtrip() {
     let (mut server, mut client, fingerprint) = setup_both_channels(16001).await;
 
     let hello = Message::Hello {
-        version: 1,
+        version: PROTOCOL_VERSION,
         fingerprint: fingerprint.clone(),
     };
     server.send(&hello).await.expect("send hello");
@@ -51,7 +53,7 @@ async fn hello_roundtrip() {
             version,
             fingerprint: fp,
         } => {
-            assert_eq!(version, 1);
+            assert_eq!(version, PROTOCOL_VERSION);
             assert!(!fp.is_empty());
         }
         _ => panic!("expected hello"),
@@ -63,7 +65,7 @@ async fn configure_ack_roundtrip() {
     let (mut server, mut client, _) = setup_both_channels(16002).await;
 
     let hello = Message::Hello {
-        version: 1,
+        version: PROTOCOL_VERSION,
         fingerprint: "test".into(),
     };
     server.send(&hello).await.expect("send hello");
@@ -100,7 +102,7 @@ async fn full_open_test_loopback() {
 
     server
         .send(&Message::Hello {
-            version: 1,
+            version: PROTOCOL_VERSION,
             fingerprint: "test".into(),
         })
         .await
@@ -151,7 +153,7 @@ async fn server_rejects_unknown_protocol() {
 
     server
         .send(&Message::Hello {
-            version: 1,
+            version: PROTOCOL_VERSION,
             fingerprint: "test".into(),
         })
         .await

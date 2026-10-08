@@ -78,16 +78,16 @@ pub async fn run_server(
             parallel,
             ..
         } => {
-            if client_version < PROTOCOL_VERSION {
+            if client_version != PROTOCOL_VERSION {
                 channel
                     .send(&Message::Ack {
                         ok: false,
                         message: Some(format!(
-                            "client version {client_version} too old, need {PROTOCOL_VERSION}"
+                            "client protocol version {client_version} does not match server version {PROTOCOL_VERSION}"
                         )),
                     })
                     .await?;
-                return Err("client version too old, update client".into());
+                return Err("client and server protocol versions do not match".into());
             }
             let bind_addr = target.as_deref().and_then(parse_configured_bind_addr);
             channel
@@ -96,7 +96,7 @@ pub async fn run_server(
                     message: None,
                 })
                 .await?;
-            (timeout_ms, parallel, bind_addr)
+            (timeout_ms, parallel.max(1), bind_addr)
         }
         _ => return Err("expected Configure message".into()),
     };
@@ -146,19 +146,20 @@ pub async fn run_server(
             _ => return Err("unexpected message, expected Test or Done".into()),
         };
 
-        // Collect more Test messages — client sent them in one burst
+        // The client marks each batch explicitly. Inferring the boundary from
+        // a quiet period loses requests when TLS/TCP spaces out a large burst.
         loop {
-            if batch.len() >= parallel {
-                break;
-            }
-            match tokio::time::timeout(Duration::from_millis(10), channel.recv()).await {
-                Ok(Ok(Message::Test {
+            match channel.recv().await? {
+                Message::Test {
                     id,
                     protocol,
                     transport,
                     port,
                     direction,
-                })) => {
+                } => {
+                    if batch.len() >= parallel {
+                        return Err("batch exceeds configured parallel limit".into());
+                    }
                     let transport = Transport::from_str(&transport)
                         .ok_or_else(|| format!("unknown transport: {transport}"))?;
                     let proto = registry
@@ -185,13 +186,12 @@ pub async fn run_server(
                         target_addr,
                     });
                 }
-                Ok(Ok(Message::Done)) => {
+                Message::BatchEnd => break,
+                Message::Done => {
                     done_after = true;
                     break;
                 }
-                Ok(Ok(_)) => return Err("unexpected message".into()),
-                Ok(Err(e)) => return Err(e),
-                Err(_) => break, // 10ms timeout, batch likely complete
+                _ => return Err("unexpected message while collecting batch".into()),
             }
         }
 
@@ -304,6 +304,7 @@ async fn execute_batch(
             })
             .await?;
     }
+    channel.send(&Message::BatchEnd).await?;
 
     let local_addr = channel.local_addr()?;
     let mut unordered: FuturesUnordered<_> = batch

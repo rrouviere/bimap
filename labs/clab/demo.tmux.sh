@@ -69,7 +69,7 @@ tmux set-option -t "$SESSION" pane-border-format ' #[fg=#5eead4,bold]#T #[defaul
 tmux set-option -t "$SESSION" status-style 'bg=#0f172a,fg=#94a3b8'
 tmux set-option -t "$SESSION" status-left-length 48
 tmux set-option -t "$SESSION" status-left '#[fg=#a3e635,bold] bimap #[fg=#64748b]// FIREWALL DISCOVERY'
-tmux set-option -t "$SESSION" status-right '#[fg=#38bdf8]CONTAINERLAB  #[fg=#fbbf24]TCP 1–100 '
+tmux set-option -t "$SESSION" status-right '#[fg=#38bdf8]CONTAINERLAB  #[fg=#fbbf24]TCP 1–1024 '
 tmux select-pane -t "$CLIENT_PANE" -T client
 tmux select-pane -t "$FIREWALL_PANE" -T firewall
 tmux select-pane -t "$TARGET_PANE" -T target
@@ -77,7 +77,7 @@ tmux select-pane -t "$TARGET_PANE" -T target
 sleep 0.5
 
 tmux send-keys -t "$CLIENT_PANE" \
-  'bimap client --control-server 10.0.1.2:4242 --test 1kb --port-range tcp/1-100 --timeout 250'
+  'bimap client --control-server 10.0.1.2:4242 --test 1kb --port-range tcp/1-1024 --timeout 250'
 tmux send-keys -t "$FIREWALL_PANE" 'nft list chain inet bimap forward_chain'
 tmux send-keys -t "$TARGET_PANE" 'bimap server --bind 0.0.0.0:4242'
 
