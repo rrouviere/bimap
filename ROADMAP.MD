@@ -5,42 +5,31 @@ The [README](README.MD) describes the tests available today.
 
 ## Phase I — Policy characterization and a useful report
 
-Build a reliable picture of which tested paths carry traffic, including TCP,
-UDP, ICMP, and direction. Make repeated observations stable and distinguish test
-setup errors from unsuccessful exchanges.
-
-The CLI should end each human-readable scan with a compact summary that:
-
-- Counts passed, failed, and errored tests.
-- Groups successful observations by transport, port range, direction, and test.
-  Present these as **candidate allow rules**, with wording that makes clear they
-  describe tested conditions rather than the middlebox's actual configuration.
-- Lists directly observed payload changes separately from connectivity results.
-- Keeps timeouts and other inconclusive failures visible without calling them
-  blocked ports. Explain that a failed exchange alone does not identify where or
-  why traffic failed.
-
-The same findings should be available in the JSON export. Quiet mode should hide
-per-test passes while retaining the final summary; JSON-lines output should stay
-usable as a stream of individual results.
-
-Phase I is complete when repeated tests through a known policy produce consistent
-results in both directions and the report states what passed, what failed, and
-what can safely be inferred. TLS and DNS remain experimental until their results
-are equally reproducible.
+- [ ] Make TCP, UDP, and ICMP observations repeatable in both directions.
+- [ ] Distinguish setup errors from unsuccessful exchanges.
+- [x] End human-readable scans with pass, fail, and error counts.
+- [x] Group successful observations by test, transport, ports, and direction as
+  **candidate allow rules**. State that these describe tested conditions, not
+  the middlebox's actual configuration.
+- [x] Report payload differences separately from connectivity results.
+- [x] Keep failures visible without treating timeouts as proof of filtering or
+  claiming where or why traffic failed.
+- [x] Include the summary findings in JSON export; keep JSON-lines output usable
+  as individual result records.
+- [x] Keep the final summary visible in quiet mode while hiding per-test passes.
+- [ ] Confirm consistent results through a known policy, including reverse
+  connections.
+- [ ] Make TLS and DNS results repeatable enough to leave experimental status.
 
 ## Phase II — Explain protocol transformations
 
-Add a reusable probe and observation interface so a protocol can compare what
-each endpoint sent and received. The interface should let new probes share
-collection and comparison code while preserving protocol-specific evidence.
-
-Use it to identify transformations such as TCP flag changes and HTTP
-middlebox behavior. For each finding, report the observed before/after values,
-the test conditions, direction, and affected traffic. Separate measured changes
-from inferred causes; do not claim which device or rule made the change without
-evidence.
-
-Phase II is complete when a new protocol can use the interface to detect a known
-transformation in a controlled test and the CLI and JSON report describe that
-finding consistently.
+- [ ] Define a reusable interface for probes and observations at both endpoints.
+- [ ] Compare sent and received data while preserving protocol-specific evidence.
+- [ ] Report each observed change with before/after values, test conditions,
+  direction, and affected traffic.
+- [ ] Detect TCP flag changes.
+- [ ] Detect HTTP middlebox behavior.
+- [ ] Keep measured changes separate from inferred causes; name a responsible
+  device or rule only when the evidence supports it.
+- [ ] Validate a known transformation in a controlled middlebox test and report
+  it consistently in human-readable output and JSON.
