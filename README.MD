@@ -6,9 +6,10 @@ It can be used for firewall rule enumeration and middlebox characterisation.
 Bimap requires the client to be able to communicate with the server over https (tcp/443) to check whether the data received at one end is the same as what was sent.
 This is a current limitation.
 
-<a href="https://asciinema.org/a/MqxnpuVBERsXnZVR"><img src="https://asciinema.org/a/MqxnpuVBERsXnZVR.svg" alt="bimap: discovering firewall rules in three Containerlab panes" width="100%" /></a>
+![Bimap scanning TCP ports 1–1024 through a firewall](labs/clab/demo.gif)
 
-Local copy: [labs/clab/demo.cast](labs/clab/demo.cast). See [the demo guide](labs/clab/README.md)
+Recording: [asciicast](labs/clab/demo.cast) · [MP4](labs/clab/demo.mp4).
+See [the demo guide](labs/clab/README.md)
 to run or record it yourself.
 
 ## Features

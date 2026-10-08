@@ -52,10 +52,20 @@ the lab if it deployed it. Pass a path to save a separate recording:
 ./labs/clab/demo-record.sh /tmp/bimap-demo.cast
 ```
 
-<a href="https://asciinema.org/a/MqxnpuVBERsXnZVR" target="_blank"><img src="https://asciinema.org/a/MqxnpuVBERsXnZVR.svg" alt="Play the bimap demo" /></a>
+![Bimap scanning TCP ports 1–1024 through a firewall](demo.gif)
 
-The preview opens the published recording in asciinema's player. The local
-copy is `labs/clab/demo.cast`.
+The animation plays directly in GitHub's README. The source recording is
+[demo.cast](demo.cast); [demo.mp4](demo.mp4) provides video playback.
+
+After recording, regenerate both media files with
+[agg](https://docs.asciinema.org/manual/agg/installation/), FFmpeg, and Python 3:
+
+```sh
+./labs/clab/demo-render.sh
+```
+
+The renderer uses the local cast, preserves its timing, and holds the final
+scan results instead of the blank screen produced when tmux detaches.
 
 ## Firewall policy
 
@@ -78,5 +88,8 @@ firewall permits the control channel separately from the tested range.
 | `bimap.clab.yml` | Three-node topology and point-to-point links. |
 | `demo.tmux.sh` | Interactive client, firewall, and target tmux layout. |
 | `demo-record.sh` | Automated live scan and asciinema recording. |
+| `demo-render.sh` | Convert the asciicast to GitHub-ready GIF and MP4 files. |
 | `demo.cast` | Latest generated asciicast. |
+| `demo.gif` | Animation embedded in the READMEs. |
+| `demo.mp4` | H.264 video of the same recording. |
 | `firewall.nft` | Stateful nftables policy loaded by Containerlab. |
